@@ -26,11 +26,9 @@ If you run **seven** subagents daily (reliability, release, review, iOS factory,
 A single-file CLI. No server. No account. No data leaves your machine.
 
 ```bash
-# Install (from source, until npm release)
-bun install -g github:XJM-free/agent-ledger
-
-# Or npm install once published:
-# npm install -g agent-ledger
+# Install
+npm install -g claude-agent-ledger
+# or: bun install -g claude-agent-ledger
 
 # Today's spend, grouped by subagent
 agent-ledger today
