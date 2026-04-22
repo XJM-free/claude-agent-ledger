@@ -29,6 +29,8 @@ npm install -g claude-agent-ledger
 
 agent-ledger week --summary        # the dashboard (start here)
 agent-ledger week --by model       # which Claude model burned the budget
+agent-ledger week --by project     # which project ate your tokens
+agent-ledger week --by session     # which single sessions went sideways
 agent-ledger week --by day         # daily bar chart with peak/avg/variance
 agent-ledger month --md > report.md
 ```
@@ -41,7 +43,10 @@ Claude Code's built-in `/cost` shows the **current session** cost. That's it.
 
 `claude-agent-ledger` answers questions `/cost` can't:
 
-- Which of my **10+ subagents** burned the budget? (`--by model` / default)
+- Which of my **10+ subagents** burned the budget? (default)
+- Which **Claude model** burned the budget — Opus vs Sonnet vs Haiku? (`--by model`)
+- Which **project** in `~/.claude/projects/` ate the tokens? (`--by project`)
+- Which **single sessions** went sideways and burned $X? (`--by session`)
 - Which **day** of last week was the expensive one? (`--by day`)
 - What would my Claude Max usage have cost on **pay-as-you-go**? (the "shadow cost" framing)
 - Is my **cache reuse ratio** healthy? (auto-derived insight)
@@ -56,17 +61,24 @@ Run `agent-ledger week --summary` once and decide.
 ```
 agent-ledger week summary  2026-04-15 → 2026-04-22
 
-  Shadow cost           $13,356.27
-  Sessions              217
+  Shadow cost           $13,450.05
+  Sessions              219
+  Projects              9
   Plan reference        $200/mo (Max)
-  Multiplier            250× vs Max plan
+  Multiplier            252× vs Max plan
 
-  Top subagent          (main)            $12,701.19 (95%)
-  Top model             claude-opus-4-7   $7,184.45 (54%)
-  Peak day              2026-04-15        $3,679.80
+  Top subagent          (main)            $12,787.19 (95%)
+  Top model             claude-opus-4-7   $7,278.87 (54%)
+  Top project           ~/clawbot         $6,657.93 (50%)
+  Peak day              2026-04-15        $3,679.16
 
-  Cache 1h writes       119.45M tokens · $3583.42
-  Cache reads           5.54B tokens · $8162.93
+  Project mix
+    ~/clawbot                      $6,657.93 (50%)
+    ~/clawbot-work                 $4,433.32 (33%)
+    ~/ZStack-zstack-workspace      $1,890.02 (14%)
+
+  Cache 1h writes       119.65M tokens · $3589.46
+  Cache reads           5.59B tokens · $8236.15
   Cache reuse           38× reads/writes
   Server tools          none
 ```
@@ -166,7 +178,8 @@ If Anthropic's actual rate differs (or web_fetch has its own price), open an iss
 
 | Flag | What it does |
 |---|---|
-| `--by <subagent\|model\|day>` | Group rows. Default: `subagent`. `day` renders as ASCII bar chart. |
+| `--summary` | One-screen dashboard with all the headline numbers |
+| `--by <subagent\|model\|day\|project\|session>` | Group rows. Default: `subagent`. `day` renders as ASCII bar chart. |
 | `--md` | Markdown table output (good for committing or sharing) |
 | `--json` | Raw JSON output (pipe into jq) |
 | `--plan pro\|max` | Hide dollar columns; show token utilization only |

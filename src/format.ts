@@ -1,8 +1,16 @@
 import type { AggregatedRow, LedgerReport } from './types.ts';
 
 const PAD_LABEL = 22;
+const PAD_LABEL_WIDE = 40; // for project paths
 const BAR_WIDTH = 40;
 const PLAN_MAX_PRICE = 200; // monthly USD reference for shadow-cost leverage
+
+// Detect when we should give labels more room (project paths can be long).
+function widestLabel(rows: { subagent: string }[]): number {
+	let w = 0;
+	for (const r of rows) if (r.subagent.length > w) w = r.subagent.length;
+	return w;
+}
 
 // Color helpers — TTY-aware, NO_COLOR-respecting (https://no-color.org/).
 const USE_COLOR = (() => {
@@ -52,8 +60,8 @@ function pct(part: number, whole: number): string {
 	return `${((part / whole) * 100).toFixed(0)}%`;
 }
 
-function formatRow(row: AggregatedRow, isTotal = false): string {
-	const labelText = row.subagent.padEnd(PAD_LABEL);
+function formatRow(row: AggregatedRow, padWidth: number, isTotal = false): string {
+	const labelText = row.subagent.padEnd(padWidth);
 	const label = isTotal
 		? `${c.bold}${labelText}${c.reset}`
 		: `${c.cyan}${labelText}${c.reset}`;
@@ -126,19 +134,20 @@ function deriveInsights(report: LedgerReport): string[] {
 	return lines;
 }
 
-export function formatTable(report: LedgerReport, label: string): string {
+export function formatTable(report: LedgerReport, label: string, groupName: string = 'subagent'): string {
+	const padWidth = Math.max(PAD_LABEL, Math.min(PAD_LABEL_WIDE, widestLabel(report.rows) + 2));
 	const summaryLine =
 		`${c.gray}${report.period.from.toISOString().slice(0, 10)} → ${report.period.to.toISOString().slice(0, 10)}${c.reset}` +
 		`  ${c.dim}·${c.reset}  ` +
 		`${c.bold}${fmtUsdComma(report.total.cost.totalCost)}${c.reset} ${c.dim}shadow${c.reset}` +
 		`  ${c.dim}·${c.reset}  ${report.total.sessionCount} sessions` +
-		`  ${c.dim}·${c.reset}  ${report.rows.length} ${label.includes('day') ? 'days' : label.includes('model') ? 'models' : 'agents'}`;
+		`  ${c.dim}·${c.reset}  ${report.rows.length} ${groupName}s`;
 
 	const header = `${c.bold}agent-ledger ${label}${c.reset}  ${summaryLine}`;
 
 	const colsRaw =
 		'  ' +
-		'subagent'.padEnd(PAD_LABEL) +
+		groupName.padEnd(padWidth) +
 		'sess'.padStart(4) +
 		'  ' +
 		'tokens(in/out)'.padStart(18) +
@@ -148,7 +157,7 @@ export function formatTable(report: LedgerReport, label: string): string {
 		'cost'.padStart(9);
 	const cols = `${c.gray}${colsRaw}${c.reset}`;
 
-	const sepRaw = '  ' + '─'.repeat(PAD_LABEL + 4 + 2 + 18 + 2 + 32 + 2 + 9);
+	const sepRaw = '  ' + '─'.repeat(padWidth + 4 + 2 + 18 + 2 + 32 + 2 + 9);
 	const sep = `${c.gray}${sepRaw}${c.reset}`;
 
 	const lines = [
@@ -156,9 +165,9 @@ export function formatTable(report: LedgerReport, label: string): string {
 		'',
 		cols,
 		sep,
-		...report.rows.map((r) => formatRow(r)),
+		...report.rows.map((r) => formatRow(r, padWidth)),
 		sep,
-		formatRow({ ...report.total, subagent: 'total' }, true),
+		formatRow({ ...report.total, subagent: 'total' }, padWidth, true),
 	];
 
 	// Server tool footer (only when present, since most rows have 0)
@@ -251,11 +260,12 @@ function deriveDailyInsights(report: LedgerReport): string[] {
 	return lines;
 }
 
-// Single-screen dashboard. Aggregates the same period across 3 dimensions.
+// Single-screen dashboard. Aggregates the same period across 4 dimensions.
 export function formatSummary(
 	bySubagent: LedgerReport,
 	byModel: LedgerReport,
 	byDay: LedgerReport,
+	byProject: LedgerReport,
 	label: string,
 ): string {
 	const total = bySubagent.total.cost.totalCost;
@@ -267,6 +277,9 @@ export function formatSummary(
 	const tSub = top(bySubagent.rows);
 	const tMod = top(byModel.rows);
 	const tDay = [...byDay.rows].sort((a, b) => b.cost.totalCost - a.cost.totalCost)[0];
+	const tProj = top(byProject.rows);
+	// Top 3 projects for quick distribution view
+	const topProjects = byProject.rows.slice(0, 3);
 
 	const k = (label: string, value: string) =>
 		`  ${c.gray}${label.padEnd(20)}${c.reset}  ${value}`;
@@ -281,28 +294,43 @@ export function formatSummary(
 		'',
 		k('Shadow cost', dollar(total)),
 		k('Sessions', `${bySubagent.total.sessionCount}`),
+		k('Projects', `${byProject.rows.length}`),
 		k('Plan reference', `$${PLAN_MAX_PRICE}/mo (Max)`),
 		k('Multiplier', `${c.bold}${leverage.toFixed(0)}×${c.reset} ${c.dim}vs Max plan${c.reset}`),
 		'',
 		k('Top subagent', tSub ? `${c.cyan}${tSub.subagent}${c.reset}  ${dollar(tSub.cost.totalCost)} ${c.dim}(${pct(tSub.cost.totalCost, total)})${c.reset}` : '—'),
 		k('Top model', tMod ? `${c.cyan}${tMod.subagent}${c.reset}  ${dollar(tMod.cost.totalCost)} ${c.dim}(${pct(tMod.cost.totalCost, total)})${c.reset}` : '—'),
+		k('Top project', tProj ? `${c.cyan}${tProj.subagent}${c.reset}  ${dollar(tProj.cost.totalCost)} ${c.dim}(${pct(tProj.cost.totalCost, total)})${c.reset}` : '—'),
 		k('Peak day', tDay ? `${c.cyan}${tDay.subagent}${c.reset}  ${dollar(tDay.cost.totalCost)}` : '—'),
-		'',
-		k('Cache 1h writes', `${fmtTokens(bySubagent.total.cacheCreation1hTokens)} tokens · ${fmtUsd(bySubagent.total.cost.cacheCreation1hCost)}`),
-		k('Cache reads', `${fmtTokens(bySubagent.total.cacheReadTokens)} tokens · ${fmtUsd(bySubagent.total.cost.cacheReadCost)}`),
-		k(
-			'Cache reuse',
-			writeTokens > 0
-				? `${c.bold}${reuseRatio.toFixed(0)}×${c.reset} ${c.dim}reads/writes${c.reset}`
-				: 'n/a',
-		),
-		k(
-			'Server tools',
-			bySubagent.total.webSearchRequests + bySubagent.total.webFetchRequests > 0
-				? `web_search ×${bySubagent.total.webSearchRequests}, web_fetch ×${bySubagent.total.webFetchRequests} (${fmtUsd(bySubagent.total.cost.serverToolUseCost)})`
-				: `${c.dim}none${c.reset}`,
-		),
 	];
+
+	// If multiple projects, list top 3 as a small breakdown
+	if (topProjects.length > 1) {
+		lines.push('');
+		lines.push(`  ${c.gray}Project mix${c.reset}`);
+		for (const p of topProjects) {
+			lines.push(
+				`    ${c.cyan}${p.subagent.padEnd(36)}${c.reset} ${dollar(p.cost.totalCost)} ${c.dim}(${pct(p.cost.totalCost, total)})${c.reset}`,
+			);
+		}
+	}
+
+	lines.push('');
+	lines.push(k('Cache 1h writes', `${fmtTokens(bySubagent.total.cacheCreation1hTokens)} tokens · ${fmtUsd(bySubagent.total.cost.cacheCreation1hCost)}`));
+	lines.push(k('Cache reads', `${fmtTokens(bySubagent.total.cacheReadTokens)} tokens · ${fmtUsd(bySubagent.total.cost.cacheReadCost)}`));
+	lines.push(k(
+		'Cache reuse',
+		writeTokens > 0
+			? `${c.bold}${reuseRatio.toFixed(0)}×${c.reset} ${c.dim}reads/writes${c.reset}`
+			: 'n/a',
+	));
+	lines.push(k(
+		'Server tools',
+		bySubagent.total.webSearchRequests + bySubagent.total.webFetchRequests > 0
+			? `web_search ×${bySubagent.total.webSearchRequests}, web_fetch ×${bySubagent.total.webFetchRequests} (${fmtUsd(bySubagent.total.cost.serverToolUseCost)})`
+			: `${c.dim}none${c.reset}`,
+	));
+
 	return lines.join('\n');
 }
 

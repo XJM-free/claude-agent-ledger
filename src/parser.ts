@@ -13,6 +13,7 @@ export interface ParseOptions {
 
 interface LogFile {
 	path: string;
+	projectId: string;
 	subagentType: string | undefined;
 }
 
@@ -34,11 +35,11 @@ export async function* findSessionLogs(
 		return;
 	}
 	for (const project of projects) {
-		yield* walkForJsonl(join(projectsDir, project));
+		yield* walkForJsonl(join(projectsDir, project), project);
 	}
 }
 
-async function* walkForJsonl(dir: string): AsyncGenerator<LogFile> {
+async function* walkForJsonl(dir: string, projectId: string): AsyncGenerator<LogFile> {
 	let entries: string[] = [];
 	try {
 		entries = await readdir(dir);
@@ -55,11 +56,11 @@ async function* walkForJsonl(dir: string): AsyncGenerator<LogFile> {
 			continue;
 		}
 		if (isDir) {
-			yield* walkForJsonl(full);
+			yield* walkForJsonl(full, projectId);
 			continue;
 		}
 		if (name.endsWith('.jsonl')) {
-			yield { path: full, subagentType: await resolveSubagentType(full) };
+			yield { path: full, projectId, subagentType: await resolveSubagentType(full) };
 		}
 	}
 }
@@ -81,6 +82,7 @@ async function resolveSubagentType(jsonlPath: string): Promise<string | undefine
 export async function* parseFile(
 	path: string,
 	subagentType?: string,
+	projectId?: string,
 ): AsyncGenerator<SessionTurn> {
 	const file = Bun.file(path);
 	const text = await file.text();
@@ -94,7 +96,7 @@ export async function* parseFile(
 		} catch {
 			continue;
 		}
-		yield extractTurn(obj, sessionId, subagentType);
+		yield extractTurn(obj, sessionId, subagentType, projectId);
 	}
 }
 
@@ -102,6 +104,7 @@ function extractTurn(
 	obj: Record<string, unknown>,
 	sessionId: string,
 	subagentType: string | undefined,
+	projectId: string | undefined,
 ): SessionTurn {
 	const msg = (obj.message ?? {}) as Record<string, unknown>;
 	const usage = (msg.usage ?? undefined) as TokenUsage | undefined;
@@ -109,11 +112,13 @@ function extractTurn(
 	// If the raw turn carries its own subagentType (our fixture format), prefer it;
 	// otherwise fall back to the directory-derived one.
 	const perTurnSubagent = ((obj.subagentType as string) ?? undefined) || undefined;
+	const perTurnProject = ((obj.projectId as string) ?? undefined) || undefined;
 
 	return {
 		type: ((obj.type as string) ?? 'assistant') as SessionTurn['type'],
 		timestamp: (obj.timestamp as string) ?? new Date().toISOString(),
 		sessionId,
+		projectId: perTurnProject ?? projectId,
 		subagentType: perTurnSubagent ?? subagentType,
 		model,
 		usage,
@@ -125,7 +130,7 @@ function extractTurn(
 export async function* parseAll(opts: ParseOptions = {}): AsyncGenerator<SessionTurn> {
 	const dir = opts.projectsDir ?? CLAUDE_PROJECTS_DIR;
 	for await (const file of findSessionLogs(dir)) {
-		for await (const turn of parseFile(file.path, file.subagentType)) {
+		for await (const turn of parseFile(file.path, file.subagentType, file.projectId)) {
 			if (opts.from && new Date(turn.timestamp) < opts.from) continue;
 			if (opts.to && new Date(turn.timestamp) > opts.to) continue;
 			yield turn;

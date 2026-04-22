@@ -3,8 +3,26 @@ import type { AggregatedRow, LedgerReport, SessionTurn } from './types.ts';
 
 const MAIN_AGENT_LABEL = '(main)';
 const UNKNOWN_MODEL_LABEL = '(no-model)';
+const UNKNOWN_PROJECT_LABEL = '(no-project)';
 
-export type GroupKey = 'subagent' | 'model' | 'day';
+export type GroupKey = 'subagent' | 'model' | 'day' | 'project' | 'session';
+
+// Decode Claude Code's project directory name to something readable.
+// Encoding rule: absolute path with `/` replaced by `-` (leading `-` for root).
+//   "-Users-xiangjie-clawbot"             → "~/clawbot"
+//   "-Users-xiangjie-newlive-agent-ledger" → "~/newlive/agent-ledger"  (best-effort; ambiguous on dirs containing '-')
+// We special-case the "$HOME" prefix (`-Users-<user>-`) to render `~` and skip the rest of the
+// "-" → "/" conversion, since that's the only place we can be sure of segment boundaries.
+export function decodeProjectId(encoded: string): string {
+	if (!encoded.startsWith('-')) return encoded;
+	const parts = encoded.slice(1).split('-'); // drop leading '-'
+	// Match common $HOME pattern: ['Users', '<user>', ...rest]
+	if (parts.length >= 3 && parts[0] === 'Users') {
+		return '~/' + parts.slice(2).join('-');
+	}
+	// Fallback: just convert all - to /
+	return '/' + parts.join('/');
+}
 
 function emptyRow(label: string): AggregatedRow {
 	return {
@@ -44,6 +62,8 @@ function splitCache(turn: SessionTurn): { fiveMin: number; oneHour: number } {
 function keyOf(turn: SessionTurn, group: GroupKey): string {
 	if (group === 'model') return turn.model ?? UNKNOWN_MODEL_LABEL;
 	if (group === 'day') return turn.timestamp.slice(0, 10);
+	if (group === 'project') return decodeProjectId(turn.projectId ?? UNKNOWN_PROJECT_LABEL);
+	if (group === 'session') return turn.sessionId.slice(0, 8);
 	return turn.subagentType ?? MAIN_AGENT_LABEL;
 }
 

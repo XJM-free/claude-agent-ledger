@@ -37,8 +37,13 @@ function usage(): never {
 Flags:
   --summary                   One-screen dashboard: total + top subagent + top
                               model + peak day + cache reuse + leverage vs $200/mo plan
-  --by <subagent|model|day>   Group rows by subagent (default), model, or day
-                              "day" renders as a daily ASCII bar chart
+  --by <subagent|model|day|project|session>
+                              Group rows by:
+                                subagent  (default) — agent attribution
+                                model     — opus vs sonnet vs haiku
+                                day       — daily ASCII bar chart
+                                project   — by Claude Code project (decoded path)
+                                session   — by session id (top spenders)
   --md                        Markdown table output (good for sharing / commits)
   --json                      Raw JSON output (for piping into jq)
   --plan pro|max              Suppress dollar columns (token utilization only)
@@ -75,7 +80,13 @@ function parseArgs(argv: string[]): Args {
 			}
 		} else if (flag === '--by') {
 			const next = rest[i + 1];
-			if (next === 'subagent' || next === 'model' || next === 'day') {
+			if (
+				next === 'subagent' ||
+				next === 'model' ||
+				next === 'day' ||
+				next === 'project' ||
+				next === 'session'
+			) {
 				by = next;
 				i++;
 			} else {
@@ -128,12 +139,13 @@ async function main(): Promise<void> {
 	const turns = await collectTurns({ from, to });
 
 	if (args.summary) {
-		const [bySub, byMod, byDay] = await Promise.all([
+		const [bySub, byMod, byDay, byProj] = await Promise.all([
 			aggregate(iterTurns(turns), from, to, 'subagent'),
 			aggregate(iterTurns(turns), from, to, 'model'),
 			aggregate(iterTurns(turns), from, to, 'day'),
+			aggregate(iterTurns(turns), from, to, 'project'),
 		]);
-		console.log(formatSummary(bySub, byMod, byDay, args.period));
+		console.log(formatSummary(bySub, byMod, byDay, byProj, args.period));
 		return;
 	}
 
@@ -148,7 +160,7 @@ async function main(): Promise<void> {
 	} else if (args.by === 'day') {
 		output = formatTrend(report, args.period);
 	} else {
-		output = formatTable(report, args.period);
+		output = formatTable(report, args.period, args.by);
 	}
 	console.log(output);
 }

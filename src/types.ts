@@ -32,6 +32,7 @@ export interface SessionTurn {
 	type: TurnType;
 	timestamp: string;
 	sessionId: string;
+	projectId?: string | undefined;
 	subagentType?: string | undefined;
 	model?: ModelId | undefined;
 	usage?: TokenUsage | undefined;

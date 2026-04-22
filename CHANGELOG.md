@@ -5,6 +5,26 @@ All notable changes to `claude-agent-ledger` will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-04-22
+
+### Added
+- `--by project` — group spend by Claude Code project directory.
+  Decodes `~/.claude/projects/-Users-xiangjie-clawbot` → `~/clawbot` so you can
+  see which project is burning budget.
+- `--by session` — group by session ID. Surfaces the single most expensive
+  conversations (useful for hunting the one that went sideways).
+- Summary dashboard now shows:
+  - `Projects` count
+  - `Top project` line
+  - `Project mix` block — top 3 projects with $ and %
+- `decodeProjectId()` exported for reuse. Special-cases the `~/` home prefix,
+  falls back to slash-joined path for other roots.
+- Row label column now auto-widens up to 40 chars for project paths.
+
+### Changed
+- `formatTable` takes an optional `groupName` arg so the header column matches
+  the group (e.g. "project", "session").
+
 ## [0.3.0] — 2026-04-22
 
 ### Added
