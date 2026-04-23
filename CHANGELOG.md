@@ -5,6 +5,34 @@ All notable changes to `claude-agent-ledger` will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] — 2026-04-23
+
+### Added — `agent-ledger explain <sessionId>` (the LLM-native move)
+
+A new subcommand that answers **"why was this single session expensive?"**
+This is the question Helicone / Langfuse / OpenLLMetry physically cannot
+answer — they observe API calls, not Claude Code's prompts and tool calls.
+
+Two modes:
+
+- **Heuristic mode** (default, no API key needed) — analyzes the session
+  JSONL and prints:
+  - Subagent + total cost + turn count
+  - Model breakdown (which model dominated)
+  - Tool invocation count (Read/Bash/Grep/Edit/MCP — top 8)
+  - Top 3 most expensive turns with full token + tool breakdown
+  - Cache reuse ratio + verdict (`<5×` warning, `>20×` good)
+
+- **LLM mode** (set `ANTHROPIC_API_KEY`) — pipes the heuristic evidence into
+  Haiku 4.5 with a tightly-scoped prompt: "identify the SPECIFIC root cause
+  + ONE concrete action to cut this session's cost by 50%+." Costs about
+  $0.001/run. Cite turn numbers from the breakdown.
+
+```bash
+agent-ledger explain 63063a38
+agent-ledger explain b988bd89-803a-4c78    # full uuid or 8-char prefix both work
+```
+
 ## [0.5.0] — 2026-04-23
 
 ### Added — performance + production-readiness foundation

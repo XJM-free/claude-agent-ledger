@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { Aggregator, type GroupKey, SubagentGraph } from '../src/aggregator.ts';
+import { analyzeSession, formatHeuristic, llmExplain } from '../src/explain.ts';
 import { formatMarkdown, formatSummary, formatTable, formatTrend } from '../src/format.ts';
 import { parseAll } from '../src/parser.ts';
 import { formatTree, formatTreeMarkdown } from '../src/tree.ts';
@@ -37,7 +38,9 @@ function periodRange(period: Period): { from: Date; to: Date } {
 }
 
 function usage(): never {
-	console.error(`Usage: agent-ledger <today|week|month> [flags]
+	console.error(`Usage:
+  agent-ledger <today|week|month> [flags]    — aggregate views
+  agent-ledger explain <sessionId>           — root-cause why one session was expensive (new in 0.6)
 
 Flags:
   --summary                   One-screen dashboard (start here).
@@ -159,7 +162,36 @@ function planMask(report: LedgerReport, plan: Plan): LedgerReport {
 	};
 }
 
+async function explainCmd(sessionPrefix: string | undefined): Promise<void> {
+	if (!sessionPrefix) {
+		console.error('agent-ledger explain: missing sessionId argument');
+		console.error('Usage: agent-ledger explain <sessionId>');
+		console.error('       (sessionId can be a full uuid or 8-char prefix)');
+		process.exit(1);
+	}
+	const analysis = await analyzeSession(sessionPrefix);
+	if (!analysis) {
+		console.error(`agent-ledger explain: no session found matching '${sessionPrefix}'`);
+		console.error('  (try the 8-char prefix from `agent-ledger week --by session`)');
+		process.exit(1);
+	}
+	const heuristic = formatHeuristic(analysis);
+	console.log(heuristic);
+	const llm = await llmExplain(analysis);
+	if (llm) {
+		console.log('');
+		console.log(llm);
+	} else if (!process.env.ANTHROPIC_API_KEY) {
+		console.log('');
+		console.log('💡 Set ANTHROPIC_API_KEY to enable LLM root-cause analysis (~$0.001/run via Haiku 4.5)');
+	}
+}
+
 async function main(): Promise<void> {
+	// Subcommand dispatch.
+	if (process.argv[2] === 'explain') {
+		return explainCmd(process.argv[3]);
+	}
 	const args = parseArgs(process.argv.slice(2));
 	const { from, to } = periodRange(args.period);
 	const t0 = Date.now();
