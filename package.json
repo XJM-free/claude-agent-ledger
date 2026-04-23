@@ -1,6 +1,6 @@
 {
   "name": "claude-agent-ledger",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "See exactly where your Claude Code budget goes — per subagent, per task.",
   "type": "module",
   "bin": {
@@ -31,6 +31,7 @@
   },
   "devDependencies": {
     "@types/bun": "latest",
+    "fast-check": "^4.7.0",
     "typescript": "^5.6.0"
   }
 }

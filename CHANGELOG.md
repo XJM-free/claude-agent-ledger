@@ -5,6 +5,33 @@ All notable changes to `claude-agent-ledger` will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] — 2026-04-23
+
+### Added — live tail + property tests
+
+- **`agent-ledger watch [intervalSec]`** — live polling mode. Re-aggregates
+  today's cost every N seconds (default 10), prints a delta meter:
+
+  ```
+  [14:46:34] today $3310.71  ↑ +$3310.71  · 9560 turns (Δ9560) · top: (main) $3167.95
+  [14:46:40] today $3310.71  · +$0.00  · 9560 turns (Δ0) · top: (main) $3167.95
+  ```
+
+  Answers "what's happening right now" without needing to re-run queries.
+  Ctrl-C to exit.
+
+- **Property tests via `fast-check`** — 7 new tests, 1400+ generated cases
+  covering:
+  - `costFor()` returns non-negative for any valid input
+  - `totalCost === sum(components)` exactly (ε < 1e-9)
+  - `cache_read ≤ fresh input` cost (90% discount holds)
+  - `cache_1h ≥ cache_5m` cost (1h tier always more expensive)
+  - `Aggregator.total === sum(rows)` for any random turn stream
+  - Non-assistant turns contribute 0 cost
+  - `SubagentGraph.totalCost ≥ selfCost` (children only add)
+
+  Total test count: 22 → 29 (kept all prior tests passing).
+
 ## [0.6.0] — 2026-04-23
 
 ### Added — `agent-ledger explain <sessionId>` (the LLM-native move)

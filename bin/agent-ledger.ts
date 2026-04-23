@@ -162,6 +162,54 @@ function planMask(report: LedgerReport, plan: Plan): LedgerReport {
 	};
 }
 
+// `--watch` live-tail mode. Re-aggregates "today" every N seconds and
+// prints a clean delta meter. Polling-based (no inotify) so it works on
+// any platform Bun runs on. Ctrl-C to exit.
+async function watchCmd(intervalSec: number): Promise<void> {
+	const interval = Math.max(2, intervalSec);
+	let prevCost = 0;
+	let prevTurnCount = 0;
+	const t0 = Date.now();
+	console.log(`agent-ledger watch — refreshing every ${interval}s · Ctrl-C to exit`);
+	console.log('');
+	const tick = async () => {
+		const { from, to } = periodRange('today');
+		const agg = new Aggregator('subagent', from, to);
+		let turns = 0;
+		for await (const turn of parseAll({ from, to })) {
+			turns++;
+			agg.add(turn);
+		}
+		const report = agg.finalize();
+		const cost = report.total.cost.totalCost;
+		const dCost = cost - prevCost;
+		const dTurns = turns - prevTurnCount;
+		const elapsedMin = ((Date.now() - t0) / 60000).toFixed(1);
+		const arrow = dCost > 0 ? '↑' : dCost < 0 ? '↓' : '·';
+		const ts = new Date().toISOString().slice(11, 19);
+		const top = report.rows[0];
+		const topLabel = top ? `top: ${top.subagent} ${fmtUsdInline(top.cost.totalCost)}` : 'no data';
+		console.log(
+			`[${ts}] today $${cost.toFixed(2)}  ${arrow} +$${dCost.toFixed(2)}  · ${turns} turns (Δ${dTurns}) · ${topLabel} · live ${elapsedMin}m`,
+		);
+		prevCost = cost;
+		prevTurnCount = turns;
+	};
+	await tick();
+	const id = setInterval(() => {
+		tick().catch((e) => console.error('watch tick error:', e));
+	}, interval * 1000);
+	process.on('SIGINT', () => {
+		clearInterval(id);
+		console.log('\nagent-ledger watch — exiting');
+		process.exit(0);
+	});
+	// Keep process alive
+	await new Promise(() => {});
+}
+
+const fmtUsdInline = (n: number): string => '$' + n.toFixed(n < 0.01 ? 4 : 2);
+
 async function explainCmd(sessionPrefix: string | undefined): Promise<void> {
 	if (!sessionPrefix) {
 		console.error('agent-ledger explain: missing sessionId argument');
@@ -191,6 +239,10 @@ async function main(): Promise<void> {
 	// Subcommand dispatch.
 	if (process.argv[2] === 'explain') {
 		return explainCmd(process.argv[3]);
+	}
+	if (process.argv[2] === 'watch') {
+		const interval = Number(process.argv[3]) || 10;
+		return watchCmd(interval);
 	}
 	const args = parseArgs(process.argv.slice(2));
 	const { from, to } = periodRange(args.period);

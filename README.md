@@ -41,6 +41,10 @@ agent-ledger today --budget 50     # CI gate: exit 2 if today > $50 — new in 0
 agent-ledger week --json | jq      # JSON output for ANY view incl. summary — new in 0.5
 agent-ledger month --md > report.md
 
+# Live tail — polling delta meter — new in 0.7
+agent-ledger watch                          # refresh every 10s
+agent-ledger watch 4                        # refresh every 4s
+
 # Root-cause analysis on a single expensive session — new in 0.6
 agent-ledger explain <session-id>           # heuristic: top-3 turns + tool/model breakdown
 ANTHROPIC_API_KEY=sk-ant-... agent-ledger explain <session-id>
