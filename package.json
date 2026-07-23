@@ -4,7 +4,7 @@
   "description": "See exactly where your Claude Code budget goes — per subagent, per task.",
   "type": "module",
   "bin": {
-    "agent-ledger": "./bin/agent-ledger.ts"
+    "agent-ledger": "bin/agent-ledger.ts"
   },
   "files": [
     "bin",
@@ -33,7 +33,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/XJM-free/claude-agent-ledger.git"
+    "url": "git+https://github.com/XJM-free/claude-agent-ledger.git"
   },
   "devDependencies": {
     "@types/bun": "latest",
