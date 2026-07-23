@@ -1,7 +1,7 @@
 import type { CostBreakdown, ModelId, TokenUsage } from './types.ts';
 
 // Prices are per 1M tokens, USD. Keep in sync with
-// https://www.anthropic.com/pricing as of 2026-04-21.
+// https://platform.claude.com/docs/en/about-claude/pricing as of 2026-07-23.
 //
 // Prompt caching (Anthropic):
 //   cache_creation 5-min TTL: 1.25× base input rate
@@ -10,15 +10,31 @@ import type { CostBreakdown, ModelId, TokenUsage } from './types.ts';
 //
 // We include both current and prior-generation model IDs because real logs span
 // version bumps (Claude Code does not auto-rewrite historical logs when you upgrade).
+const SONNET_5_STANDARD_PRICE_START = new Date('2026-09-01T00:00:00Z');
+const SONNET_5_INTRO_RATE = { input: 2, output: 10 };
+const SONNET_5_STANDARD_RATE = { input: 3, output: 15 };
+
 const PRICING: Record<string, { input: number; output: number }> = {
-	// Current generation (2026-04)
-	'claude-opus-4-7': { input: 15, output: 75 },
+	// Current generation (2026-07)
+	'claude-fable-5': { input: 10, output: 50 },
+	'claude-mythos-5': { input: 10, output: 50 },
+	'claude-opus-4-8': { input: 5, output: 25 },
+	'claude-opus-4-7': { input: 5, output: 25 },
+	'claude-opus-4-6': { input: 5, output: 25 },
+	'claude-opus-4-5': { input: 5, output: 25 },
+	// resolveModel applies the introductory rate through 2026-08-31.
+	'claude-sonnet-5': SONNET_5_STANDARD_RATE,
 	'claude-sonnet-4-6': { input: 3, output: 15 },
-	'claude-haiku-4-5-20251001': { input: 0.8, output: 4 },
-	// Prior generation (still appears in logs written before model upgrades)
-	'claude-opus-4-6': { input: 15, output: 75 },
-	'claude-opus-4-5': { input: 15, output: 75 },
 	'claude-sonnet-4-5': { input: 3, output: 15 },
+	'claude-haiku-4-5-20251001': { input: 1, output: 5 },
+	'claude-haiku-4-5': { input: 1, output: 5 },
+	// Prior generation (still appears in logs written before model upgrades)
+	'claude-opus-4-1-20250805': { input: 15, output: 75 },
+	'claude-opus-4-20250514': { input: 15, output: 75 },
+	'claude-sonnet-4-20250514': { input: 3, output: 15 },
+	'claude-haiku-3-5-20241022': { input: 0.8, output: 4 },
+	'claude-3-haiku-20240307': { input: 0.25, output: 1.25 },
+	// Kept for the aliases observed in older Claude Code logs.
 	'claude-haiku-4-0': { input: 0.8, output: 4 },
 };
 
@@ -30,25 +46,30 @@ const CACHE_5M_MULTIPLIER = 1.25;
 const CACHE_1H_MULTIPLIER = 2.0;
 const CACHE_READ_MULTIPLIER = 0.1;
 
-// Anthropic server-tool pricing (https://www.anthropic.com/pricing as of 2026-04):
+// Anthropic server-tool pricing (official pricing docs as of 2026-07-23):
 //   Web search: $10 per 1,000 requests = $0.01 / request
-//   Web fetch:  treated identically here pending Anthropic split (file an issue if wrong)
+//   Web fetch:  no per-request charge; fetched content still incurs token costs
 const WEB_SEARCH_PRICE_PER_REQUEST = 0.01;
-const WEB_FETCH_PRICE_PER_REQUEST = 0.01;
+const WEB_FETCH_PRICE_PER_REQUEST = 0;
 
-function resolveModel(model: ModelId | undefined): { input: number; output: number } {
+function resolveModel(model: ModelId | undefined, asOf: Date): { input: number; output: number } {
 	if (!model) return { input: 0, output: 0 };
 	if (FREE_MODELS.has(model)) return { input: 0, output: 0 };
+	if (model === 'claude-sonnet-5' || model.startsWith('claude-sonnet-5-')) {
+		return asOf < SONNET_5_STANDARD_PRICE_START
+			? SONNET_5_INTRO_RATE
+			: SONNET_5_STANDARD_RATE;
+	}
 	const exact = PRICING[model];
 	if (exact) return exact;
-	// Fuzzy family prefix match as a safety net for unknown subversions.
-	// e.g. "claude-opus-4-8-20260301" falls back to Opus pricing until we add it.
+	// A provider/date-suffixed ID can inherit a verified base model's rate.
+	// Unknown future model families deliberately return zero instead of silently
+	// inventing a price; the CLI warns when it sees one.
 	for (const key of Object.keys(PRICING)) {
-		if (model.startsWith(key)) return PRICING[key] as { input: number; output: number };
+		if (model.startsWith(`${key}-`)) {
+			return PRICING[key] as { input: number; output: number };
+		}
 	}
-	if (model.startsWith('claude-opus-')) return { input: 15, output: 75 };
-	if (model.startsWith('claude-sonnet-')) return { input: 3, output: 15 };
-	if (model.startsWith('claude-haiku-')) return { input: 0.8, output: 4 };
 	return { input: 0, output: 0 };
 }
 
@@ -70,8 +91,12 @@ function splitCacheCreation(usage: TokenUsage): CacheBreakdown {
 	};
 }
 
-export function costFor(usage: TokenUsage, model: ModelId | undefined): CostBreakdown {
-	const rate = resolveModel(model);
+export function costFor(
+	usage: TokenUsage,
+	model: ModelId | undefined,
+	asOf: Date = new Date(),
+): CostBreakdown {
+	const rate = resolveModel(model, asOf);
 	const cacheRead = usage.cache_read_input_tokens ?? 0;
 	const { fiveMin, oneHour } = splitCacheCreation(usage);
 
@@ -110,5 +135,5 @@ export function isKnownModel(model: ModelId | undefined): boolean {
 	if (!model) return false;
 	if (FREE_MODELS.has(model)) return true;
 	if (PRICING[model]) return true;
-	return Object.keys(PRICING).some((key) => model.startsWith(key));
+	return Object.keys(PRICING).some((key) => model.startsWith(`${key}-`));
 }

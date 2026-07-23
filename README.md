@@ -5,8 +5,9 @@
 [![npm](https://img.shields.io/npm/v/claude-agent-ledger.svg)](https://www.npmjs.com/package/claude-agent-ledger)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-> *Even I needed `--anonymize` before posting my own data publicly.
-> That's why the flag exists. Use it before you screenshot.*
+> Use `--anonymize` before sharing output. It replaces project paths and
+> session IDs, but it does not rename subagent or tool names — review those
+> before you post a screenshot.
 
 ---
 
@@ -26,32 +27,40 @@ If you run **seven** subagents daily (reliability, release, review, iOS factory,
 
 ## Install
 
+Requires [Bun](https://bun.sh/) 1.1 or newer. The CLI is Bun-native even when
+you install it from npm.
+
 ```bash
-npm install -g claude-agent-ledger
-# or: bun install -g claude-agent-ledger
+bun install -g claude-agent-ledger
+# or, with Bun already available: npm install -g claude-agent-ledger
 
 agent-ledger week --summary        # the dashboard (start here)
-agent-ledger week --tree           # subagent fan-out tree (the MOAT view) — new in 0.5
-agent-ledger week --by tool        # which tool ate the budget (Read/Bash/Grep/MCP) — new in 0.5
+agent-ledger week --tree           # parent → child subagent attribution
+agent-ledger week --by tool        # which tool ate the budget (Read/Bash/Grep/MCP)
 agent-ledger week --by model       # opus vs sonnet vs haiku
 agent-ledger week --by project     # which project ate your tokens
 agent-ledger week --by session     # which single sessions went sideways
 agent-ledger week --by day         # daily bar chart with peak/avg/variance
-agent-ledger today --budget 50     # CI gate: exit 2 if today > $50 — new in 0.5
-agent-ledger week --json | jq      # JSON output for ANY view incl. summary — new in 0.5
+agent-ledger today --budget 50     # CI gate: exit 2 if today > $50
+agent-ledger week --json | jq      # JSON output for any view, including summary
 agent-ledger month --md > report.md
 
-# Live tail — polling delta meter — new in 0.7
+# Live tail — polling delta meter
 agent-ledger watch                          # refresh every 10s
 agent-ledger watch 4                        # refresh every 4s
 
-# Root-cause analysis on a single expensive session — new in 0.6
+# Root-cause analysis on a single expensive session
 agent-ledger explain <session-id>           # heuristic: top-3 turns + tool/model breakdown
 ANTHROPIC_API_KEY=sk-ant-... agent-ledger explain <session-id>
-                                            # LLM mode: Haiku 4.5 ≤4-bullet root cause (~$0.001/run)
+                                            # LLM mode: Haiku 4.5 ≤4-bullet root cause (typically <$0.005/run)
 ```
 
-No server. No account. No data leaves your machine.
+All aggregate commands run locally, require no account, and make no network
+requests. `explain` is also local by default. If you explicitly set
+`ANTHROPIC_API_KEY`, it sends derived session metrics — subagent/model/tool
+names, timestamps, token counts, and cost totals — to the
+Anthropic API. The session identifier is redacted. It does **not** send prompts,
+responses, tool content, or project paths.
 
 ## Why this and not `/cost`?
 
@@ -70,77 +79,23 @@ Claude Code's built-in `/cost` shows the **current session** cost. That's it.
 
 Run `agent-ledger week --summary` once and decide.
 
-## Example output (real, from the author's machine)
+## Example
 
-### `--summary` (the dashboard)
+This is deterministic output from the repository's synthetic fixture, using the
+price snapshot documented below:
 
+```text
+agent-ledger today summary
+
+  Shadow cost           $0.08
+  Sessions              2
+  Projects              1
+
+  Top subagent          Reality Checker  $0.06 (74%)
+  Top model             claude-sonnet-4-6  $0.06 (74%)
+  Cache reads           56K tokens · $0.02
+  Cache reuse           28× reads/writes
 ```
-agent-ledger week summary  2026-04-15 → 2026-04-22
-
-  Shadow cost           $13,450.05
-  Sessions              219
-  Projects              9
-  Plan reference        $200/mo (Max)
-  Multiplier            252× vs Max plan
-
-  Top subagent          (main)            $12,787.19 (95%)
-  Top model             claude-opus-4-7   $7,278.87 (54%)
-  Top project           ~/clawbot         $6,657.93 (50%)
-  Peak day              2026-04-15        $3,679.16
-
-  Project mix
-    ~/clawbot                      $6,657.93 (50%)
-    ~/clawbot-work                 $4,433.32 (33%)
-    ~/ZStack-zstack-workspace      $1,890.02 (14%)
-
-  Cache 1h writes       119.65M tokens · $3589.46
-  Cache reads           5.59B tokens · $8236.15
-  Cache reuse           38× reads/writes
-  Server tools          none
-```
-
-### Default — by subagent
-
-```
-agent-ledger week · 2026-04-14 → 2026-04-21
-
-  subagent              sess      tokens(in/out)         cache tokens (1h/5m/read)       cost
-  ───────────────────────────────────────────────────────────────────────────────────────────
-  (main)                  28       514K / 15.87M  1h:116.10M 5m:      0 r:5229.48M  $12524.97
-  general-purpose        148         113K / 955K  1h:      0 5m: 20.67M r: 183.94M    $599.97
-  Swift Developer         13           4K / 574K  1h:      0 5m:  1.61M r:  47.55M     $28.93
-  Market Researcher       10          107K / 74K  1h:      0 5m:   863K r:   8.61M      $7.26
-  Explore                 13          176K / 77K  1h:      0 5m:  2.60M r:  22.38M      $6.47
-  zstackws                 3           232 / 20K  1h:      0 5m:   829K r:   3.52M      $4.47
-  claude-code-guide        1             2K / 2K  1h:      0 5m:    56K r:    223K      $0.08
-  ───────────────────────────────────────────────────────────────────────────────────────────
-  total                  216       916K / 17.57M  1h:116.10M 5m: 26.62M r:5495.71M  $13172.14
-```
-
-### `--by model`
-
-```
-  subagent              sess      tokens(in/out)         cache tokens (1h/5m/read)       cost
-  ───────────────────────────────────────────────────────────────────────────────────────────
-  claude-opus-4-7         16        59K / 8.35M   1h: 61.15M 5m:  2.32M r:2974.59M   $6967.29
-  claude-opus-4-6        127       544K / 8.25M   1h: 55.02M 5m: 13.30M r:2422.18M   $6160.46
-  claude-sonnet-4-6       65        135K / 946K   1h:      0 5m:  8.81M r:  98.12M     $77.07
-  claude-haiku-4-5        13        178K /  67K   1h:      0 5m:  2.19M r:  21.57M      $4.33
-```
-
-### `--by day` (ASCII bar chart)
-
-```
-  2026-04-15   $3749.84  ████████████████████████████████████ (18 sess)
-  2026-04-16   $2492.99  ████████████████████████             (175 sess)
-  2026-04-17   $2111.63  ████████████████████                 (9 sess)
-  2026-04-18   $1840.02  ██████████████████                   (18 sess)
-  2026-04-19    $644.97  ██████                               (5 sess)
-  2026-04-20   $1095.58  ███████████                          (6 sess)
-  2026-04-21   $1273.55  ████████████                         (9 sess)
-```
-
-Yes those are real numbers. Yes it's a lot. See [Shadow cost vs actual bill](#shadow-cost-vs-actual-bill).
 
 ## Shadow cost vs actual bill
 
@@ -151,9 +106,13 @@ If you're on a fixed-price subscription (Claude Pro / Max / Claude Code plan), y
 - Understanding where time-and-token budget goes, regardless of how you pay
 - Spotting runaway agents (a 10× spike is still a 10× spike, capped or not)
 - Deciding when to downshift to Haiku or up to Opus per task
-- Justifying a Max subscription internally ("our shadow cost is $13K/wk, Max is $200/mo — that's a 65× discount")
+- Comparing usage concentration with a fixed-price plan. Shadow cost is an
+  estimate, not a claim that subscription usage is interchangeable with raw API
+  capacity.
 
-If you're on pay-as-you-go, the `cost` column is roughly your bill (±5–10% depending on tier / geography / `server_tool_use` calibration).
+If you're on pay-as-you-go, treat the `cost` column as a directional estimate.
+Batch discounts, long-context premiums, provider-specific rates, retries, and
+future price changes can make an invoice differ.
 
 ## How it works
 
@@ -163,10 +122,10 @@ and any `server_tool_use` (web_search / web_fetch) requests. Subagent invocation
 under `<session>/subagents/agent-*.jsonl`, with a sidecar `.meta.json` carrying the real
 subagent name (e.g. `Reality Checker`, `ios-factory`).
 
-`claude-agent-ledger` walks the tree, resolves subagent types from the sidecar metadata,
-and aggregates by your chosen key (subagent, model, or day). Pricing is applied locally
-from `src/pricing.ts`. Nothing is sent anywhere — the tool never touches the network
-after install.
+`claude-agent-ledger` walks the tree, resolves subagent types from the sidecar
+metadata, and aggregates by your chosen key. Pricing is applied locally from
+`src/pricing.ts`. Aggregate commands never touch the network after install; the
+optional API-backed `explain` mode is disclosed in [Install](#install).
 
 ### Cache accounting
 
@@ -182,24 +141,31 @@ Naive trackers lump these together as "input" and either overstate (by counting 
 
 ### Server tool pricing
 
-`web_search_requests` and `web_fetch_requests` are counted at $0.01/request and shown in a footer when present:
+`web_search_requests` cost $0.01/request. `web_fetch_requests` are counted for
+observability but have no per-request charge; fetched content still contributes
+normal token costs. Both appear in the footer:
 
 ```
   server tools: web_search ×7, web_fetch ×0  ($0.07)
 ```
 
-If Anthropic's actual rate differs (or web_fetch has its own price), open an issue.
+Rates were checked against Anthropic's official pricing page on 2026-07-23.
+If a log contains a model ID without a verified rate, the CLI warns on stderr
+and leaves that model's token cost at `$0.00` instead of guessing.
 
 ## Flags
 
 | Flag | What it does |
 |---|---|
 | `--summary` | One-screen dashboard with all the headline numbers |
-| `--by <subagent\|model\|day\|project\|session>` | Group rows. Default: `subagent`. `day` renders as ASCII bar chart. |
+| `--by <subagent\|model\|day\|project\|session\|tool>` | Group rows. Default: `subagent`. `day` renders as ASCII bar chart. |
+| `--tree` | Render parent → child subagent cost attribution |
+| `--budget <USD>` | Exit with code 2 when estimated cost exceeds the threshold |
 | `--anonymize` | Replace project paths and session ids with `~/repo-A`, `sess-A`, ... so you can share screenshots without doxing your employer / private repos. |
 | `--md` | Markdown table output (good for committing or sharing) |
 | `--json` | Raw JSON output (pipe into jq) |
-| `--plan pro\|max` | Hide dollar columns; show token utilization only |
+| `--plan pro\|max` | Mask estimated costs in grouped table views; `--summary` and `--tree` keep their cost-oriented output |
+| `--verbose` | Print parse counts and elapsed time to stderr |
 
 | Env | What it does |
 |---|---|
@@ -221,11 +187,16 @@ If Anthropic's actual rate differs (or web_fetch has its own price), open an iss
 
 ## Status
 
-`v0.2.0` shipped 2026-04-21. Validated on ~200K turns of real Claude Code logs.
-Pricing matches Anthropic published rates as of 2026-04-21. Shadow cost values
-may drift ±5-10% from Anthropic's actual invoice in edge cases (retries, tier
-bumps, `server_tool_use` calibration). Calibration PRs welcome — see issue
-templates.
+The npm badge above reports the current published version. See
+[`CHANGELOG.md`](CHANGELOG.md) for release history.
+
+The source price table was checked against Anthropic's published rates on
+2026-07-23. Sonnet 5 automatically switches from its introductory rate to the
+published standard rate on 2026-09-01. Pricing can change, so shadow costs are
+estimates rather than invoice replicas; check
+[`src/pricing.ts`](src/pricing.ts) and the
+[official pricing page](https://platform.claude.com/docs/en/about-claude/pricing)
+before making billing decisions.
 
 - [x] Log parser (JSONL streaming, recursive subagent discovery)
 - [x] Per-subagent aggregation
@@ -235,7 +206,7 @@ templates.
 - [x] ANSI color, TTY-aware
 - [x] Cache 1h/5m TTL split pricing
 - [x] `--plan pro|max` to mask shadow cost
-- [x] `server_tool_use` pricing (web_search, web_fetch)
+- [x] `server_tool_use` accounting (paid web search, no-fee web fetch)
 - [ ] Cost forecasting (trailing 7-day burn rate)
 - [ ] Calibration against real Anthropic invoices
 - [ ] Homebrew tap
@@ -253,14 +224,15 @@ agent-ledger today
 ## Development
 
 ```bash
-bun test           # 22 pass, 0 fail
+bun test           # 35 pass, 0 fail
 bun run typecheck
+bun run build
 ```
 
 ## Author
 
-Built by [@XJM-free](https://jiexiang.dev) while running seven production Claude Code
-subagents for infrastructure work. More context coming on the blog.
+Built by [Jie Xiang](https://jiexiang.dev)
+([@XJM-free](https://github.com/XJM-free)).
 
 ## License
 

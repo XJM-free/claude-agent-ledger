@@ -5,6 +5,25 @@ All notable changes to `claude-agent-ledger` will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] — 2026-07-23
+
+### Fixed
+
+- Refresh model rates against Anthropic's 2026-07-23 pricing, including Opus
+  4.5–4.8, Haiku 4.5, Fable 5, and Mythos 5. Sonnet 5 switches from its
+  introductory rate to the published standard rate on 2026-09-01.
+- Stop charging a per-request fee for `web_fetch`; only `web_search` has the
+  documented $0.01 request fee.
+- Build for Bun rather than Node, matching the CLI's Bun runtime dependencies.
+- Limit the npm tarball to runtime source, README, and license files.
+- Apply `--anonymize` to session identifiers in the `--tree` view.
+- Keep `--budget` enforcement active when `--plan` masks displayed costs.
+- Reject unknown CLI flags instead of silently ignoring them.
+- Redact the session identifier sent by API-backed `explain` mode and document
+  the remaining derived metrics that leave the machine.
+- Refuse to invent a family price for unknown future model IDs; warn and leave
+  their token cost unpriced until an official rate is added.
+
 ## [0.7.0] — 2026-04-23
 
 ### Added — live tail + property tests
@@ -53,7 +72,7 @@ Two modes:
 - **LLM mode** (set `ANTHROPIC_API_KEY`) — pipes the heuristic evidence into
   Haiku 4.5 with a tightly-scoped prompt: "identify the SPECIFIC root cause
   + ONE concrete action to cut this session's cost by 50%+." Costs about
-  $0.001/run. Cite turn numbers from the breakdown.
+  typically under $0.005/run. Cite turn numbers from the breakdown.
 
 ```bash
 agent-ledger explain 63063a38

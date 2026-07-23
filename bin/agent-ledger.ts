@@ -3,8 +3,9 @@ import { Aggregator, type GroupKey, SubagentGraph } from '../src/aggregator.ts';
 import { analyzeSession, formatHeuristic, llmExplain } from '../src/explain.ts';
 import { formatMarkdown, formatSummary, formatTable, formatTrend } from '../src/format.ts';
 import { parseAll } from '../src/parser.ts';
+import { isKnownModel } from '../src/pricing.ts';
 import { formatTree, formatTreeMarkdown } from '../src/tree.ts';
-import type { LedgerReport } from '../src/types.ts';
+import type { LedgerReport, SubagentTreeNode } from '../src/types.ts';
 
 type Period = 'today' | 'week' | 'month';
 type Plan = 'payg' | 'pro' | 'max';
@@ -57,7 +58,7 @@ Flags:
   --budget <USD>              Exit non-zero (code 2) if total cost > USD. Pipe-friendly.
   --md                        Markdown table output (good for sharing / commits)
   --json                      Raw JSON output (also works with --summary now)
-  --plan pro|max              Suppress dollar columns (token utilization only)
+  --plan pro|max              Mask estimated costs in grouped table views.
   --anonymize                 Replace project paths and session ids with safe placeholders.
   --verbose                   Print parse stats (files, turns, elapsed) to stderr.
 
@@ -117,6 +118,16 @@ function parseArgs(argv: string[]): Args {
 			}
 			budget = n;
 			i++;
+		} else if (
+			flag !== '--md' &&
+			flag !== '--json' &&
+			flag !== '--summary' &&
+			flag !== '--tree' &&
+			flag !== '--anonymize' &&
+			flag !== '--verbose'
+		) {
+			console.error(`agent-ledger: unknown flag '${flag}'`);
+			usage();
 		}
 	}
 	return {
@@ -142,6 +153,29 @@ function anonymizeReport(report: LedgerReport, group: GroupKey): LedgerReport {
 	};
 	const newRows = report.rows.map((r, i) => ({ ...r, subagent: labelFor(i) }));
 	return { ...report, rows: newRows };
+}
+
+function anonymizeTrees(roots: SubagentTreeNode[]): SubagentTreeNode[] {
+	const labels = new Map<string, string>();
+	const labelFor = (sessionId: string): string => {
+		const existing = labels.get(sessionId);
+		if (existing) return existing;
+		const i = labels.size;
+		const suffix =
+			i < 26
+				? String.fromCharCode(65 + i)
+				: String.fromCharCode(65 + Math.floor(i / 26) - 1) +
+					String.fromCharCode(65 + (i % 26));
+		const label = `sess-${suffix}`;
+		labels.set(sessionId, label);
+		return label;
+	};
+	const visit = (node: SubagentTreeNode): SubagentTreeNode => ({
+		...node,
+		sessionId: labelFor(node.sessionId),
+		children: node.children.map(visit),
+	});
+	return roots.map(visit);
 }
 
 function planMask(report: LedgerReport, plan: Plan): LedgerReport {
@@ -231,7 +265,9 @@ async function explainCmd(sessionPrefix: string | undefined): Promise<void> {
 		console.log(llm);
 	} else if (!process.env.ANTHROPIC_API_KEY) {
 		console.log('');
-		console.log('💡 Set ANTHROPIC_API_KEY to enable LLM root-cause analysis (~$0.001/run via Haiku 4.5)');
+		console.log(
+			'💡 Set ANTHROPIC_API_KEY to enable LLM root-cause analysis (typically <$0.005/run via Haiku 4.5)',
+		);
 	}
 }
 
@@ -258,14 +294,26 @@ async function main(): Promise<void> {
 	const graph = args.tree ? new SubagentGraph() : undefined;
 
 	let turnCount = 0;
+	const unknownModels = new Set<string>();
 	for await (const turn of parseAll({ from, to })) {
 		turnCount++;
+		if (turn.model && !isKnownModel(turn.model)) {
+			unknownModels.add(turn.model);
+		}
 		aggBySub.add(turn);
 		aggByMod?.add(turn);
 		aggByDay?.add(turn);
 		aggByProj?.add(turn);
 		aggUser?.add(turn);
 		graph?.add(turn);
+	}
+
+	if (unknownModels.size > 0) {
+		console.error(
+			'agent-ledger: no verified price for model(s): ' +
+				[...unknownModels].sort().join(', ') +
+				'; their token cost is shown as $0.00',
+		);
 	}
 
 	if (args.verbose) {
@@ -278,7 +326,8 @@ async function main(): Promise<void> {
 	let totalCost = aggBySub.finalize().total.cost.totalCost;
 
 	if (args.tree) {
-		const roots = graph!.finalize(20);
+		const rawRoots = graph!.finalize(20);
+		const roots = args.anonymize ? anonymizeTrees(rawRoots) : rawRoots;
 		totalCost = roots.reduce((s, r) => s + r.totalCost, 0);
 		const out =
 			args.json
@@ -308,8 +357,9 @@ async function main(): Promise<void> {
 	} else {
 		let report = aggUser!.finalize();
 		if (args.anonymize) report = anonymizeReport(report, args.by);
-		report = planMask(report, args.plan);
+		// Keep the unmasked estimate for --budget even when --plan hides it.
 		totalCost = report.total.cost.totalCost;
+		report = planMask(report, args.plan);
 		const output =
 			args.json
 				? JSON.stringify(report, null, 2)

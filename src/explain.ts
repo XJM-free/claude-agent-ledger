@@ -5,7 +5,7 @@
 //    tool-call breakdown + cache-reuse stats.
 // 2. LLM mode (set ANTHROPIC_API_KEY): pipes the same evidence into
 //    Haiku 4.5 for a 4-bullet verdict ("prompt bloat", "Opus mis-selection",
-//    "no cache reuse", "tool output overflow"). Costs ~$0.001/run.
+//    "no cache reuse", "tool output overflow"). Typically costs <$0.005/run.
 
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -166,7 +166,9 @@ interface AnthropicMsgRes {
 export async function llmExplain(s: SessionAnalysis): Promise<string | undefined> {
 	const apiKey = process.env.ANTHROPIC_API_KEY;
 	if (!apiKey) return undefined;
-	const evidence = formatHeuristic(s);
+	// The session identifier is useful locally but adds no analytical value to
+	// the API request, so keep it off the network.
+	const evidence = formatHeuristic({ ...s, sessionId: '[redacted]' });
 	const prompt = `You are a Claude Code cost-optimization expert. A user's session burned ${fmtUsd(s.totalCost)} across ${s.turnCount} turns. Below is the per-turn breakdown:
 
 ${evidence}

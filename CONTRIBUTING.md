@@ -22,6 +22,7 @@ The most useful contributions right now:
 bun install
 bun test
 bun run typecheck
+bun run build
 bun run bin/agent-ledger.ts today
 ```
 

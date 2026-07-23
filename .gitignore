@@ -3,7 +3,13 @@ dist/
 .DS_Store
 *.log
 .env
-.env.local
+.env.*
+!.env.example
+.wrangler/
+*.pem
+*.key
+*.p12
+*.pfx
 coverage/
 bun.lockb
 .npmrc

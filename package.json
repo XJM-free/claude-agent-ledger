@@ -1,15 +1,21 @@
 {
   "name": "claude-agent-ledger",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "See exactly where your Claude Code budget goes — per subagent, per task.",
   "type": "module",
   "bin": {
     "agent-ledger": "./bin/agent-ledger.ts"
   },
+  "files": [
+    "bin",
+    "src",
+    "LICENSE",
+    "README.md"
+  ],
   "scripts": {
     "dev": "bun run bin/agent-ledger.ts",
     "test": "bun test",
-    "build": "bun build bin/agent-ledger.ts --target=node --outdir dist",
+    "build": "bun build bin/agent-ledger.ts --target=bun --outdir dist",
     "typecheck": "tsc --noEmit"
   },
   "engines": {
