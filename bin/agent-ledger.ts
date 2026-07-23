@@ -6,6 +6,7 @@ import { parseAll } from '../src/parser.ts';
 import { isKnownModel } from '../src/pricing.ts';
 import { formatTree, formatTreeMarkdown } from '../src/tree.ts';
 import type { LedgerReport, SubagentTreeNode } from '../src/types.ts';
+import packageJson from '../package.json';
 
 type Period = 'today' | 'week' | 'month';
 type Plan = 'payg' | 'pro' | 'max';
@@ -38,8 +39,9 @@ function periodRange(period: Period): { from: Date; to: Date } {
 	return { from, to };
 }
 
-function usage(): never {
-	console.error(`Usage:
+function usage(exitCode = 1): never {
+	const write = exitCode === 0 ? console.log : console.error;
+	write(`Usage:
   agent-ledger <today|week|month> [flags]    — aggregate views
   agent-ledger explain <sessionId>           — root-cause why one session was expensive (new in 0.6)
 
@@ -73,7 +75,7 @@ Examples:
   agent-ledger week --json | jq '.total.cost.totalCost'
   agent-ledger today --budget 50            # CI gate: fail if today > $50
 `);
-	process.exit(1);
+	process.exit(exitCode);
 }
 
 function parseArgs(argv: string[]): Args {
@@ -272,15 +274,25 @@ async function explainCmd(sessionPrefix: string | undefined): Promise<void> {
 }
 
 async function main(): Promise<void> {
+	const cliArgs = process.argv.slice(2);
+	const command = cliArgs[0];
+	if (command === 'help' || cliArgs.includes('--help') || cliArgs.includes('-h')) {
+		usage(0);
+	}
+	if (command === '--version' || command === '-v') {
+		console.log(packageJson.version);
+		return;
+	}
+
 	// Subcommand dispatch.
-	if (process.argv[2] === 'explain') {
+	if (command === 'explain') {
 		return explainCmd(process.argv[3]);
 	}
-	if (process.argv[2] === 'watch') {
+	if (command === 'watch') {
 		const interval = Number(process.argv[3]) || 10;
 		return watchCmd(interval);
 	}
-	const args = parseArgs(process.argv.slice(2));
+	const args = parseArgs(cliArgs);
 	const { from, to } = periodRange(args.period);
 	const t0 = Date.now();
 
