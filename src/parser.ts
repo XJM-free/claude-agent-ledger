@@ -1,6 +1,8 @@
-import { readdir, stat } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { access, lstat, readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
+import { parseRfc3339Timestamp } from './timestamp.ts';
 import type { SessionTurn, TokenUsage } from './types.ts';
 
 const CLAUDE_PROJECTS_DIR = join(homedir(), '.claude', 'projects');
@@ -12,6 +14,15 @@ export interface ParseOptions {
 	from?: Date;
 	to?: Date;
 	projectsDir?: string;
+	/** Fail instead of silently skipping unreadable paths; reject nested symlinks. */
+	strictSource?: boolean;
+	/** Deliver invalid or missing timestamps so a caller can report the coverage gap. */
+	includeInvalidTimestamps?: boolean;
+	diagnostics?: ParseDiagnostics;
+}
+
+export interface ParseDiagnostics {
+	malformedJsonLines: number;
 }
 
 export interface LogFile {
@@ -27,53 +38,84 @@ type ReadyOutcome<T> =
 
 export async function* findSessionLogs(
 	projectsDir: string = CLAUDE_PROJECTS_DIR,
+	strictSource = false,
 ): AsyncGenerator<LogFile> {
-	let projects: string[] = [];
-	try {
-		projects = await readdir(projectsDir);
-	} catch {
-		return;
-	}
+	const projects = await readDirectory(projectsDir, strictSource);
 	// Parallelize project-level walks, then retain the discovered file metadata.
-	const walkers = projects.map((project) =>
-		collectWalk(join(projectsDir, project), project),
-	);
+	const walkers = projects.map(async (project) => {
+		const projectPath = join(projectsDir, project);
+		if (strictSource) {
+			const info = await inspectPath(projectPath, true);
+			if (!info) throw new Error(`cannot inspect forecast source path: ${projectPath}`);
+			if (info.isSymbolicLink()) {
+				throw new Error(`symbolic link is not allowed in forecast source: ${projectPath}`);
+			}
+			if (!info.isDirectory()) return [];
+		}
+		return collectWalk(projectPath, project, strictSource);
+	});
 	const settled = await Promise.all(walkers);
 	for (const list of settled) {
 		for (const lf of list) yield lf;
 	}
 }
 
-async function collectWalk(dir: string, projectId: string): Promise<LogFile[]> {
+async function collectWalk(
+	dir: string,
+	projectId: string,
+	strictSource: boolean,
+): Promise<LogFile[]> {
 	const out: LogFile[] = [];
-	for await (const lf of walkForJsonl(dir, projectId)) out.push(lf);
+	for await (const lf of walkForJsonl(dir, projectId, strictSource)) out.push(lf);
 	return out;
 }
 
-async function* walkForJsonl(dir: string, projectId: string): AsyncGenerator<LogFile> {
-	let entries: string[] = [];
+async function readDirectory(dir: string, strictSource: boolean): Promise<string[]> {
 	try {
-		entries = await readdir(dir);
-	} catch {
-		return;
+		if (strictSource) await access(dir, constants.R_OK | constants.X_OK);
+		return await readdir(dir);
+	} catch (error) {
+		if (strictSource) {
+			throw new Error(`cannot read forecast source directory: ${dir}`, { cause: error });
+		}
+		return [];
 	}
+}
+
+async function inspectPath(path: string, strictSource: boolean) {
+	try {
+		return strictSource ? await lstat(path) : await stat(path);
+	} catch (error) {
+		if (strictSource) {
+			throw new Error(`cannot inspect forecast source path: ${path}`, { cause: error });
+		}
+		return undefined;
+	}
+}
+
+async function* walkForJsonl(
+	dir: string,
+	projectId: string,
+	strictSource: boolean,
+): AsyncGenerator<LogFile> {
+	const entries = await readDirectory(dir, strictSource);
 	// If this directory IS named 'subagents', its parent session is one level up.
 	// e.g. .../<session-uuid>/subagents/agent-XXX.jsonl → parent = <session-uuid>
 	const parentSession = basename(dir) === 'subagents' ? basename(dirname(dir)) : undefined;
 	for (const name of entries) {
 		if (name.startsWith('.') || name === 'memory') continue;
 		const full = join(dir, name);
-		let isDir = false;
-		try {
-			isDir = (await stat(full)).isDirectory();
-		} catch {
-			continue;
+		const info = await inspectPath(full, strictSource);
+		if (!info) continue;
+		if (strictSource && info.isSymbolicLink()) {
+			throw new Error(`symbolic link is not allowed in forecast source: ${full}`);
 		}
-		if (isDir) {
-			yield* walkForJsonl(full, projectId);
+		if (info.isDirectory()) {
+			yield* walkForJsonl(full, projectId, strictSource);
 			continue;
 		}
 		if (name.endsWith('.jsonl')) {
+			if (strictSource) await access(full, constants.R_OK);
 			const subagentType = await resolveSubagentType(full);
 			yield {
 				path: full,
@@ -98,12 +140,14 @@ async function resolveSubagentType(jsonlPath: string): Promise<string | undefine
 }
 
 // Streaming line reader — does NOT buffer the whole file.
-// Handles partial lines across chunk boundaries. Skips malformed JSON.
+// Handles partial lines across chunk boundaries. Malformed JSON is skipped and
+// counted when the caller supplies diagnostics.
 export async function* parseFile(
 	path: string,
 	subagentType?: string,
 	projectId?: string,
 	parentSessionId?: string,
+	diagnostics?: ParseDiagnostics,
 ): AsyncGenerator<SessionTurn> {
 	const sessionId = basename(path).replace('.jsonl', '');
 	const stream = Bun.file(path).stream();
@@ -116,14 +160,28 @@ export async function* parseFile(
 			const line = buffer.slice(0, nl);
 			buffer = buffer.slice(nl + 1);
 			if (!line.trim()) continue;
-			const turn = tryParseLine(line, sessionId, subagentType, projectId, parentSessionId);
+			const turn = tryParseLine(
+				line,
+				sessionId,
+				subagentType,
+				projectId,
+				parentSessionId,
+				diagnostics,
+			);
 			if (turn) yield turn;
 		}
 	}
 	// Flush any trailing partial line.
 	buffer += decoder.decode();
 	if (buffer.trim()) {
-		const turn = tryParseLine(buffer, sessionId, subagentType, projectId, parentSessionId);
+		const turn = tryParseLine(
+			buffer,
+			sessionId,
+			subagentType,
+			projectId,
+			parentSessionId,
+			diagnostics,
+		);
 		if (turn) yield turn;
 	}
 }
@@ -134,13 +192,20 @@ function tryParseLine(
 	subagentType: string | undefined,
 	projectId: string | undefined,
 	parentSessionId: string | undefined,
+	diagnostics: ParseDiagnostics | undefined,
 ): SessionTurn | undefined {
-	let obj: Record<string, unknown>;
+	let parsed: unknown;
 	try {
-		obj = JSON.parse(line);
+		parsed = JSON.parse(line);
 	} catch {
+		if (diagnostics) diagnostics.malformedJsonLines++;
 		return undefined;
 	}
+	if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+		if (diagnostics) diagnostics.malformedJsonLines++;
+		return undefined;
+	}
+	const obj = parsed as Record<string, unknown>;
 	return extractTurn(obj, sessionId, subagentType, projectId, parentSessionId);
 }
 
@@ -175,7 +240,7 @@ function extractTurn(
 
 	return {
 		type: ((obj.type as string) ?? 'assistant') as SessionTurn['type'],
-		timestamp: (obj.timestamp as string) ?? new Date().toISOString(),
+		timestamp: typeof obj.timestamp === 'string' ? obj.timestamp : '',
 		sessionId,
 		projectId: perTurnProject ?? projectId,
 		subagentType: perTurnSubagent ?? subagentType,
@@ -274,8 +339,13 @@ async function* filterByRange(
 	opts: ParseOptions,
 ): AsyncGenerator<SessionTurn> {
 	for await (const turn of turns) {
-		if (opts.from && new Date(turn.timestamp) < opts.from) continue;
-		if (opts.to && new Date(turn.timestamp) > opts.to) continue;
+		const timestamp = parseRfc3339Timestamp(turn.timestamp);
+		if (!timestamp) {
+			if (opts.includeInvalidTimestamps) yield turn;
+			continue;
+		}
+		if (opts.from && timestamp < opts.from) continue;
+		if (opts.to && timestamp > opts.to) continue;
 		yield turn;
 	}
 }
@@ -293,7 +363,13 @@ export async function* streamLogFiles(
 		const batch = files.slice(i, i + CONCURRENCY);
 		const streams = batch.map((file) =>
 			filterByRange(
-				readLog(file.path, file.subagentType, file.projectId, file.parentSessionId),
+				readLog(
+					file.path,
+					file.subagentType,
+					file.projectId,
+					file.parentSessionId,
+					opts.diagnostics,
+				),
 				opts,
 			),
 		);
@@ -306,6 +382,6 @@ export async function* streamLogFiles(
 export async function* parseAll(opts: ParseOptions = {}): AsyncGenerator<SessionTurn> {
 	const dir = opts.projectsDir ?? CLAUDE_PROJECTS_DIR;
 	const files: LogFile[] = [];
-	for await (const file of findSessionLogs(dir)) files.push(file);
+	for await (const file of findSessionLogs(dir, opts.strictSource)) files.push(file);
 	yield* streamLogFiles(files, opts);
 }
