@@ -1,4 +1,6 @@
 import { describe, expect, test } from 'bun:test';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { aggregate } from '../src/aggregator.ts';
 import { mergeAsyncIterables, parseAll, streamLogFiles } from '../src/parser.ts';
@@ -64,6 +66,46 @@ describe('parseAll()', () => {
 		);
 
 		expect(report.rows.length).toBe(0);
+	});
+
+	test('does not invent timestamps and can expose invalid records with diagnostics', async () => {
+		const root = mkdtempSync(join(tmpdir(), 'agent-ledger-parser-'));
+		try {
+			const project = join(root, 'project');
+			mkdirSync(project);
+			writeFileSync(
+				join(project, 'damaged.jsonl'),
+				[
+					JSON.stringify({
+						type: 'assistant',
+						message: {
+							model: 'claude-sonnet-4-6',
+							usage: { input_tokens: 1, output_tokens: 1 },
+						},
+					}),
+					'{malformed-json',
+				].join('\n') + '\n',
+			);
+
+			const defaultTurns = [];
+			for await (const turn of parseAll({ projectsDir: root })) defaultTurns.push(turn);
+			expect(defaultTurns).toEqual([]);
+
+			const diagnostics = { malformedJsonLines: 0 };
+			const diagnosticTurns = [];
+			for await (const turn of parseAll({
+				projectsDir: root,
+				includeInvalidTimestamps: true,
+				diagnostics,
+			})) {
+				diagnosticTurns.push(turn);
+			}
+			expect(diagnosticTurns).toHaveLength(1);
+			expect(diagnosticTurns[0]?.timestamp).toBe('');
+			expect(diagnostics.malformedJsonLines).toBe(1);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 });
 
