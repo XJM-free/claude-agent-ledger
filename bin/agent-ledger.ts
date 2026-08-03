@@ -7,7 +7,15 @@ import { Aggregator, type GroupKey, SubagentGraph } from '../src/aggregator.ts';
 import { analyzeSession, formatHeuristic, llmExplain } from '../src/explain.ts';
 import { ForecastAccumulator, type ForecastPlan, formatForecast } from '../src/forecast.ts';
 import { formatMarkdown, formatSummary, formatTable, formatTrend } from '../src/format.ts';
-import { parseAll, type ParseDiagnostics } from '../src/parser.ts';
+import {
+	LOG_CONTRACT_VERSION,
+	createParseDiagnostics,
+	formatParseDiagnosticSamples,
+	hasParseCoverageGaps,
+	parseDiagnosticCounts,
+	type ParseDiagnostics,
+} from '../src/log-contract.ts';
+import { parseAll } from '../src/parser.ts';
 import { isKnownModel } from '../src/pricing.ts';
 import { formatTree, formatTreeMarkdown } from '../src/tree.ts';
 import type { LedgerReport, SubagentTreeNode } from '../src/types.ts';
@@ -246,17 +254,24 @@ async function watchCmd(intervalSec: number): Promise<void> {
 	const interval = Math.max(2, intervalSec);
 	let prevCost = 0;
 	let prevTurnCount = 0;
+	let previousDiagnosticState = '';
 	const t0 = Date.now();
 	console.log(`agent-ledger watch — refreshing every ${interval}s · Ctrl-C to exit`);
 	console.log('');
 	const tick = async () => {
 		const { from, to } = periodRange('today');
 		const agg = new Aggregator('subagent', from, to);
+		const diagnostics = createParseDiagnostics();
 		let turns = 0;
-		for await (const turn of parseAll({ from, to })) {
+		for await (const turn of parseAll({ from, to, diagnostics })) {
 			turns++;
 			agg.add(turn);
 		}
+		const diagnosticState = parseDiagnosticState(diagnostics);
+		if (parseDiagnosticCounts(diagnostics).length > 0 && diagnosticState !== previousDiagnosticState) {
+			reportParseDiagnostics('agent-ledger watch', diagnostics);
+		}
+		previousDiagnosticState = diagnosticState;
 		const report = agg.finalize();
 		const cost = report.total.cost.totalCost;
 		const dCost = cost - prevCost;
@@ -287,6 +302,35 @@ async function watchCmd(intervalSec: number): Promise<void> {
 
 const fmtUsdInline = (n: number): string => '$' + n.toFixed(n < 0.01 ? 4 : 2);
 
+function parseDiagnosticState(diagnostics: ParseDiagnostics): string {
+	const samples = diagnostics.samples
+		.map((sample) => `${sample.code}:${sample.source}:${sample.line ?? 0}`)
+		.sort();
+	return JSON.stringify({ counts: parseDiagnosticCounts(diagnostics), samples });
+}
+
+function reportParseDiagnostics(
+	prefix: string,
+	diagnostics: ParseDiagnostics,
+	anonymize = false,
+): void {
+	const counts = parseDiagnosticCounts(diagnostics);
+	if (counts.length === 0) return;
+	const impact = hasParseCoverageGaps(diagnostics)
+		? 'reported totals may be lower bounds'
+		: 'subagent attribution may be incomplete';
+	console.error(
+		`${prefix}: log contract v${LOG_CONTRACT_VERSION} excluded ${counts.join(', ')}; ${impact}`,
+	);
+	for (const sample of formatParseDiagnosticSamples(diagnostics, anonymize)) {
+		console.error(`${prefix}: ${sample}`);
+	}
+	console.error(
+		`${prefix}: report new variants with a synthetic or redacted fixture at ` +
+			'https://github.com/XJM-free/claude-agent-ledger/issues',
+	);
+}
+
 async function explainCmd(sessionPrefix: string | undefined): Promise<void> {
 	if (!sessionPrefix) {
 		console.error('agent-ledger explain: missing sessionId argument');
@@ -294,10 +338,16 @@ async function explainCmd(sessionPrefix: string | undefined): Promise<void> {
 		console.error('       (sessionId can be a full uuid or 8-char prefix)');
 		process.exit(1);
 	}
-	const analysis = await analyzeSession(sessionPrefix);
+	const diagnostics = createParseDiagnostics();
+	const analysis = await analyzeSession(sessionPrefix, diagnostics);
 	if (!analysis) {
 		console.error(`agent-ledger explain: no session found matching '${sessionPrefix}'`);
 		console.error('  (try the 8-char prefix from `agent-ledger week --by session`)');
+		process.exit(1);
+	}
+	reportParseDiagnostics('agent-ledger explain', diagnostics);
+	if (analysis.turnCount === 0 && hasParseCoverageGaps(diagnostics)) {
+		console.error('agent-ledger explain: no supported billable turns remain after validation');
 		process.exit(1);
 	}
 	const heuristic = formatHeuristic(analysis);
@@ -334,14 +384,13 @@ async function forecastCmd(argv: string[]): Promise<void> {
 	const parserTo = new Date(historyToExclusive.getTime() - 1);
 	const startedAt = Date.now();
 	let candidateTurns = 0;
-	const diagnostics: ParseDiagnostics = { malformedJsonLines: 0 };
+	const diagnostics = createParseDiagnostics();
 	try {
 		for await (const turn of parseAll({
 			from: historyFrom,
 			to: parserTo,
 			projectsDir,
 			strictSource: true,
-			includeInvalidTimestamps: true,
 			diagnostics,
 		})) {
 			candidateTurns++;
@@ -354,26 +403,18 @@ async function forecastCmd(argv: string[]): Promise<void> {
 	}
 	const report = accumulator.finalize(diagnostics);
 
-	if (report.amountsAreLowerBounds) {
+	if (report.pricing.status === 'partial') {
 		const gaps: string[] = [];
 		gaps.push(...report.pricing.unpricedModels);
 		if (report.pricing.missingModelTurns > 0) {
 			gaps.push(`${report.pricing.missingModelTurns} missing-model turn(s)`);
 		}
-		if (report.records.malformedJsonLines > 0) {
-			gaps.push(`${report.records.malformedJsonLines} malformed JSON line(s)`);
-		}
-		if (report.records.invalidTimestampTurns > 0) {
-			gaps.push(`${report.records.invalidTimestampTurns} invalid-timestamp turn(s)`);
-		}
-		if (report.records.invalidUsageTurns > 0) {
-			gaps.push(`${report.records.invalidUsageTurns} invalid-usage turn(s)`);
-		}
 		console.error(
-			`agent-ledger forecast: incomplete cost coverage (${gaps.join(', ')}); ` +
+			`agent-ledger forecast: incomplete pricing coverage (${gaps.join(', ')}); ` +
 				'all reported amounts are lower bounds',
 		);
 	}
+	reportParseDiagnostics('agent-ledger forecast', diagnostics);
 	if (args.verbose) {
 		console.error(
 			`agent-ledger forecast: parsed ${candidateTurns} candidate turns in ${Date.now() - startedAt}ms`,
@@ -419,8 +460,9 @@ async function main(): Promise<void> {
 	const graph = args.tree ? new SubagentGraph() : undefined;
 
 	let turnCount = 0;
+	const diagnostics = createParseDiagnostics();
 	const unknownModels = new Set<string>();
-	for await (const turn of parseAll({ from, to })) {
+	for await (const turn of parseAll({ from, to, diagnostics })) {
 		turnCount++;
 		if (turn.model && !isKnownModel(turn.model)) {
 			unknownModels.add(turn.model);
@@ -440,11 +482,12 @@ async function main(): Promise<void> {
 				'; their token cost is shown as $0.00',
 		);
 	}
+	reportParseDiagnostics('agent-ledger', diagnostics, args.anonymize);
 
 	if (args.verbose) {
 		const elapsed = Date.now() - t0;
 		console.error(
-			`agent-ledger: parsed ${turnCount} turns from ~/.claude/projects in ${elapsed}ms`,
+			`agent-ledger: parsed ${turnCount} billable turns and ignored ${diagnostics.ignoredSourceRecordLines} known non-billable source records from ~/.claude/projects in ${elapsed}ms`,
 		);
 	}
 
