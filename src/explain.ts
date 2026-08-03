@@ -10,6 +10,7 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { Glob } from 'bun';
+import type { ParseDiagnostics } from './log-contract.ts';
 import { parseFile } from './parser.ts';
 import { costFor } from './pricing.ts';
 import type { SessionTurn } from './types.ts';
@@ -49,11 +50,14 @@ async function findSessionFile(sessionPrefix: string): Promise<string | undefine
 	return undefined;
 }
 
-export async function analyzeSession(sessionPrefix: string): Promise<SessionAnalysis | undefined> {
+export async function analyzeSession(
+	sessionPrefix: string,
+	diagnostics?: ParseDiagnostics,
+): Promise<SessionAnalysis | undefined> {
 	const path = await findSessionFile(sessionPrefix);
 	if (!path) return undefined;
 	const turns: SessionTurn[] = [];
-	for await (const t of parseFile(path)) turns.push(t);
+	for await (const t of parseFile(path, undefined, undefined, undefined, diagnostics)) turns.push(t);
 	return analyze(turns, sessionPrefix);
 }
 

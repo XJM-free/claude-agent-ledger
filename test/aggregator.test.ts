@@ -19,7 +19,6 @@ function zeroCostTurn(
 		parentSessionId,
 		model: '<synthetic>',
 		usage: { input_tokens: 0, output_tokens: 0 },
-		raw: null,
 	};
 }
 
@@ -30,8 +29,8 @@ describe('aggregate()', () => {
 		const report = await aggregate(parseFile(FIXTURE), from, to);
 
 		const agents = report.rows.map((r) => r.subagent);
-		expect(agents).toContain('ios-factory');
-		expect(agents).toContain('Reality Checker');
+		expect(agents).toContain('synthetic-a');
+		expect(agents).toContain('synthetic-b');
 		expect(agents).toContain('(main)');
 	});
 
