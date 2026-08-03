@@ -5,6 +5,18 @@ All notable changes to `claude-agent-ledger` will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Keep concurrent JSONL parsing bounded to one pending turn per active file.
+  The previous batch implementation drained as many as eight complete logs and
+  retained every in-range turn in arrays before yielding.
+- Yield turns without waiting for every file in the batch to reach EOF, while
+  preserving the eight-file concurrency limit and date filtering.
+- Keep equal-cost rows and tree nodes deterministic when concurrent files
+  complete in a different order.
+
 ## [0.7.2] — 2026-07-23
 
 ### Fixed

@@ -71,8 +71,17 @@ function keysOf(turn: SessionTurn, group: GroupKey): string[] {
 }
 
 function sortKey(group: GroupKey): (a: AggregatedRow, b: AggregatedRow) => number {
-	if (group === 'day') return (a, b) => (a.subagent < b.subagent ? -1 : a.subagent > b.subagent ? 1 : 0);
-	return (a, b) => b.cost.totalCost - a.cost.totalCost;
+	const byLabel = (a: AggregatedRow, b: AggregatedRow) =>
+		a.subagent < b.subagent ? -1 : a.subagent > b.subagent ? 1 : 0;
+	if (group === 'day') return byLabel;
+	return (a, b) => b.cost.totalCost - a.cost.totalCost || byLabel(a, b);
+}
+
+function compareTreeNodes(a: SubagentTreeNode, b: SubagentTreeNode): number {
+	return (
+		b.totalCost - a.totalCost ||
+		(a.sessionId < b.sessionId ? -1 : a.sessionId > b.sessionId ? 1 : 0)
+	);
 }
 
 // Streaming aggregator. add() per turn, finalize() at end.
@@ -222,7 +231,7 @@ export class SubagentGraph {
 			}
 			const childIds = childrenOf.get(sessionId) ?? [];
 			const children = childIds.map((id) => buildNode(id));
-			children.sort((a, b) => b.totalCost - a.totalCost);
+			children.sort(compareTreeNodes);
 			const childTotal = children.reduce((s, c) => s + c.totalCost, 0);
 			return {
 				sessionId,
@@ -236,7 +245,7 @@ export class SubagentGraph {
 		const roots = [...this.accums.values()]
 			.filter((a) => !a.parentSessionId)
 			.map((a) => buildNode(a.sessionId))
-			.sort((a, b) => b.totalCost - a.totalCost)
+			.sort(compareTreeNodes)
 			.slice(0, topN);
 		return roots;
 	}
