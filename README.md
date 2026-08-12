@@ -275,6 +275,7 @@ before making billing decisions.
 
 - [x] Versioned log contract with bounded, privacy-safe diagnostics
 - [x] Log parser (bounded JSONL streaming, recursive subagent discovery)
+- [x] Reproducible synthetic parser throughput and peak-RSS benchmark
 - [x] Per-subagent aggregation
 - [x] Per-model aggregation (`--by model`)
 - [x] Per-day aggregation with bar chart (`--by day`)
@@ -290,7 +291,10 @@ before making billing decisions.
 The parser reads up to eight JSONL files concurrently and keeps at most one
 in-flight or ready turn per active file. It still retains discovered file
 paths, each stream's decode buffer, the aggregator's unique grouping keys, and
-session-ID sets; it does not retain every parsed turn.
+session-ID sets; it does not retain every parsed turn. See
+[`BENCHMARKS.md`](BENCHMARKS.md) for the fixed-file synthetic workload,
+sanitized receipt schema, regression thresholds, and explicit limits on what
+the measurements establish.
 
 ## Install from source
 
@@ -308,6 +312,7 @@ agent-ledger today
 bun test
 bun run typecheck
 bun run build
+bun run benchmark:check
 ```
 
 ## Author
