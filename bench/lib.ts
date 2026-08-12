@@ -4,7 +4,7 @@ import { once } from 'node:events';
 import { mkdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
-export const BENCHMARK_SCHEMA_VERSION = 1;
+export const BENCHMARK_SCHEMA_VERSION = 2;
 export const CORPUS_VERSION = 'synthetic-log-contract-v1' as const;
 export const GENERATOR_ALGORITHM = 'fixed-16-round-robin-index-modulo-10-v1';
 export const GENERATOR_SEED = 'none-fixed-sequence-v1';
@@ -22,6 +22,8 @@ export const MAX_RSS_ENVELOPE_GROWTH_BYTES = 192 * 1024 * 1024;
 export const HISTORICAL_THROUGHPUT_REGRESSION_FRACTION = 0.25;
 export const HISTORICAL_RSS_REGRESSION_FRACTION = 0.25;
 export const HISTORICAL_RSS_REGRESSION_FLOOR_BYTES = 32 * 1024 * 1024;
+export const PEAK_RSS_NORMALIZATION_ID =
+	'bun-1.3.13-rumaxrss-linux-kib-darwin-bytes-v1' as const;
 
 export type BenchmarkProfileName = 'smoke' | 'full';
 
@@ -286,9 +288,27 @@ export function validateWorkerResult(value: unknown, manifest: CorpusManifest): 
 	};
 }
 
-export function validatePeakRss(value: unknown): number {
+export function normalizePeakRssBytes(
+	value: unknown,
+	hostPlatform: string,
+	bunVersion: string,
+): number {
 	if (!finitePositive(value)) throw new Error('benchmark worker did not report a valid peak RSS');
-	return value;
+	// Bun 1.3.13 exposes the native getrusage(2) high-water value here:
+	// Linux ru_maxrss is KiB, while Darwin ru_maxrss is bytes. Keep this
+	// explicit and fail closed on platforms whose native unit we have not
+	// verified instead of publishing a mislabeled receipt.
+	if (bunVersion !== '1.3.13') {
+		throw new Error('benchmark peak RSS normalization is unverified for this Bun version');
+	}
+	let bytes: number;
+	if (hostPlatform === 'linux') bytes = value * 1024;
+	else if (hostPlatform === 'darwin') bytes = value;
+	else throw new Error('benchmark peak RSS units are unsupported on this platform');
+	if (!Number.isSafeInteger(bytes) || bytes <= 0) {
+		throw new Error('benchmark normalized peak RSS is not a positive safe integer');
+	}
+	return bytes;
 }
 
 export function median(values: readonly number[]): number {
@@ -395,6 +415,7 @@ export interface HistoricalComparisonInput {
 		corpusVersion: string;
 		generatorAlgorithm: string;
 		generatorSeed: string;
+		peakRssNormalizationId: string;
 	};
 	cases: BenchmarkCaseSummary[];
 }
@@ -411,6 +432,91 @@ export interface HistoricalComparison {
 	}>;
 }
 
+export function historicalInputFromReceipt(value: unknown): HistoricalComparisonInput {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) {
+		throw new Error('historical benchmark receipt must be an object');
+	}
+	const receipt = value as {
+		schemaVersion?: unknown;
+		benchmark?: unknown;
+		profile?: unknown;
+		corpus?: {
+			version?: unknown;
+			generator?: { algorithm?: unknown; seed?: unknown };
+		};
+		environment?: {
+			bunVersion?: unknown;
+			platform?: unknown;
+			arch?: unknown;
+			osRelease?: unknown;
+			cpuModel?: unknown;
+		};
+		measurement?: { peakRssNormalizationId?: unknown };
+		cases?: unknown;
+	};
+	if (
+		receipt.schemaVersion !== BENCHMARK_SCHEMA_VERSION ||
+		receipt.benchmark !== 'parseAll-fixed-file-streaming' ||
+		(receipt.profile !== 'smoke' && receipt.profile !== 'full') ||
+		!receipt.corpus ||
+		!receipt.environment ||
+		!receipt.measurement ||
+		!Array.isArray(receipt.cases) ||
+		receipt.cases.length !== 3 ||
+		![
+			receipt.corpus.version,
+			receipt.corpus.generator?.algorithm,
+			receipt.corpus.generator?.seed,
+			receipt.environment.bunVersion,
+			receipt.environment.platform,
+			receipt.environment.arch,
+			receipt.environment.osRelease,
+			receipt.environment.cpuModel,
+			receipt.measurement.peakRssNormalizationId,
+		].every((item) => typeof item === 'string' && item.length > 0)
+	) {
+		throw new Error('historical benchmark receipt is missing comparison fields');
+	}
+	const cases = receipt.cases.map((item: unknown) => {
+		if (!item || typeof item !== 'object' || Array.isArray(item)) {
+			throw new Error('historical benchmark receipt has invalid comparison measurements');
+		}
+		const candidate = item as Partial<BenchmarkCaseSummary>;
+		return {
+			records: candidate.records,
+			medianParseWallMs: candidate.medianParseWallMs,
+			maxPeakRssBytes: candidate.maxPeakRssBytes,
+			recordsPerSecond: candidate.recordsPerSecond,
+		};
+	});
+	if (
+		cases.some((item) =>
+			[item.records, item.medianParseWallMs, item.maxPeakRssBytes, item.recordsPerSecond].some(
+				(candidate) =>
+					typeof candidate !== 'number' || !Number.isFinite(candidate) || candidate <= 0,
+			),
+		) ||
+		new Set(cases.map((item) => item.records)).size !== cases.length
+	) {
+		throw new Error('historical benchmark receipt has invalid comparison measurements');
+	}
+	return {
+		identity: {
+			bunVersion: receipt.environment.bunVersion as string,
+			platform: receipt.environment.platform as string,
+			arch: receipt.environment.arch as string,
+			osRelease: receipt.environment.osRelease as string,
+			cpuModel: receipt.environment.cpuModel as string,
+			profile: receipt.profile,
+			corpusVersion: receipt.corpus.version as string,
+			generatorAlgorithm: receipt.corpus.generator?.algorithm as string,
+			generatorSeed: receipt.corpus.generator?.seed as string,
+			peakRssNormalizationId: receipt.measurement.peakRssNormalizationId as string,
+		},
+		cases: cases as BenchmarkCaseSummary[],
+	};
+}
+
 export function compareHistoricalBaseline(
 	current: HistoricalComparisonInput,
 	baseline: HistoricalComparisonInput,
@@ -425,6 +531,7 @@ export function compareHistoricalBaseline(
 		'corpusVersion',
 		'generatorAlgorithm',
 		'generatorSeed',
+		'peakRssNormalizationId',
 	] as const;
 	for (const key of identityKeys) {
 		if (current.identity[key] !== baseline.identity[key]) {

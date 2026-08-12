@@ -15,12 +15,14 @@ import {
 	MEASURED_RUNS,
 	MIN_RATIO_DENOMINATOR_MS,
 	PROJECT_COUNT,
+	PEAK_RSS_NORMALIZATION_ID,
 	compareHistoricalBaseline,
 	evaluateScale,
 	generateSyntheticCorpus,
+	historicalInputFromReceipt,
 	measurementOrder,
 	median,
-	validatePeakRss,
+	normalizePeakRssBytes,
 	validateWorkerResult,
 	type BenchmarkCaseSummary,
 	type BenchmarkCheck,
@@ -28,7 +30,6 @@ import {
 	type CorpusManifest,
 	type GeneratedCorpus,
 	type HistoricalComparison,
-	type HistoricalComparisonInput,
 	type WorkerResult,
 } from './lib.ts';
 
@@ -95,6 +96,8 @@ interface BenchmarkReceipt {
 		parseTimer: 'worker performance.now around parseAll discovery and drain';
 		processTimer: 'parent performance.now from spawn through exit';
 		peakRss: 'fresh child lifetime high-water bytes from Bun.Subprocess.resourceUsage';
+		peakRssNormalizationId: typeof PEAK_RSS_NORMALIZATION_ID;
+		peakRssNormalization: 'Bun 1.3.13 native ru_maxrss: Linux KiB x 1024; Darwin bytes';
 		wallAggregation: 'median of three samples';
 		rssAggregation: 'maximum of three samples';
 		throughputDenominator: 'all input records';
@@ -213,7 +216,11 @@ async function runWorker(corpus: GeneratedCorpus): Promise<BenchmarkSample> {
 		throw new Error('benchmark worker returned malformed JSON');
 	}
 	const result = validateWorkerResult(parsed, corpus.manifest);
-	const peakRssBytes = validatePeakRss(child.resourceUsage()?.maxRSS);
+	const peakRssBytes = normalizePeakRssBytes(
+		child.resourceUsage()?.maxRSS,
+		platform(),
+		Bun.version,
+	);
 	if (!Number.isFinite(processWallMs) || processWallMs <= 0) {
 		throw new Error('benchmark parent timer returned an invalid duration');
 	}
@@ -238,68 +245,6 @@ function summarizeCase(
 		recordsPerSecond: corpus.manifest.records / seconds,
 		mibPerSecond: corpus.manifest.bytes / MIB / seconds,
 	};
-}
-
-function asHistoricalInput(value: unknown): HistoricalComparisonInput {
-	if (!value || typeof value !== 'object' || Array.isArray(value)) {
-		throw new Error('historical benchmark receipt must be an object');
-	}
-	const receipt = value as Partial<BenchmarkReceipt>;
-	if (
-		receipt.schemaVersion !== BENCHMARK_SCHEMA_VERSION ||
-		receipt.benchmark !== 'parseAll-fixed-file-streaming' ||
-		(receipt.profile !== 'smoke' && receipt.profile !== 'full') ||
-		!receipt.corpus ||
-		!receipt.environment ||
-		!Array.isArray(receipt.cases) ||
-		receipt.cases.length !== 3 ||
-		![
-			receipt.corpus.version,
-			receipt.corpus.generator?.algorithm,
-			receipt.corpus.generator?.seed,
-			receipt.environment.bunVersion,
-			receipt.environment.platform,
-			receipt.environment.arch,
-			receipt.environment.osRelease,
-			receipt.environment.cpuModel,
-		].every((item) => typeof item === 'string' && item.length > 0)
-	) {
-		throw new Error('historical benchmark receipt is missing comparison fields');
-	}
-	const cases = receipt.cases.map((item) => ({
-		records: item.records,
-		medianParseWallMs: item.medianParseWallMs,
-		maxPeakRssBytes: item.maxPeakRssBytes,
-		recordsPerSecond: item.recordsPerSecond,
-	}));
-	if (
-		cases.some((item) =>
-			[item.records, item.medianParseWallMs, item.maxPeakRssBytes, item.recordsPerSecond].some(
-				(value) => typeof value !== 'number' || !Number.isFinite(value) || value <= 0,
-			),
-		) ||
-		new Set(cases.map((item) => item.records)).size !== cases.length
-	) {
-		throw new Error('historical benchmark receipt has invalid comparison measurements');
-	}
-	return {
-		identity: {
-			bunVersion: receipt.environment.bunVersion,
-			platform: receipt.environment.platform,
-			arch: receipt.environment.arch,
-			osRelease: receipt.environment.osRelease,
-			cpuModel: receipt.environment.cpuModel,
-			profile: receipt.profile,
-			corpusVersion: receipt.corpus.version,
-			generatorAlgorithm: receipt.corpus.generator.algorithm,
-			generatorSeed: receipt.corpus.generator.seed,
-		},
-		cases,
-	};
-}
-
-function receiptHistoricalInput(receipt: BenchmarkReceipt): HistoricalComparisonInput {
-	return asHistoricalInput(receipt);
 }
 
 function formatNumber(value: number, digits = 1): string {
@@ -396,6 +341,8 @@ async function run(options: CliOptions): Promise<BenchmarkReceipt> {
 				parseTimer: 'worker performance.now around parseAll discovery and drain',
 				processTimer: 'parent performance.now from spawn through exit',
 				peakRss: 'fresh child lifetime high-water bytes from Bun.Subprocess.resourceUsage',
+				peakRssNormalizationId: PEAK_RSS_NORMALIZATION_ID,
+				peakRssNormalization: 'Bun 1.3.13 native ru_maxrss: Linux KiB x 1024; Darwin bytes',
 				wallAggregation: 'median of three samples',
 				rssAggregation: 'maximum of three samples',
 				throughputDenominator: 'all input records',
@@ -421,8 +368,8 @@ async function run(options: CliOptions): Promise<BenchmarkReceipt> {
 				throw new Error('historical benchmark receipt could not be read');
 			}
 			receipt.historicalComparison = compareHistoricalBaseline(
-				receiptHistoricalInput(receipt),
-				asHistoricalInput(parsed),
+				historicalInputFromReceipt(receipt),
+				historicalInputFromReceipt(parsed),
 			);
 		}
 		return receipt;

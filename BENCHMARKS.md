@@ -64,6 +64,13 @@ samples. Corpus verification and a warm-up read precede the measurements, so
 the throughput is a best-effort warm-filesystem-cache result; the harness does
 not claim cold-storage performance or try to purge an OS-wide cache.
 
+Bun 1.3.13 exposes native `ru_maxrss` units despite its byte-oriented API
+typing: KiB on Linux and bytes on Darwin. The parent explicitly multiplies the
+Linux value by 1024 before storing `peakRssBytes` and refuses to benchmark an
+unverified platform or Bun version. This normalization is identified as
+`bun-1.3.13-rumaxrss-linux-kib-darwin-bytes-v1` in receipt schema v2; schema v1
+receipts predate the Linux correction and must not be used as baselines.
+
 ## Hard checks
 
 Every warm-up and measured sample fails immediately on a timeout, non-zero
@@ -93,8 +100,9 @@ self-hosted runner.
 
 The JSON receipt contains the source commit and dirty flag; exact corpus
 version, algorithm, seed, SHA-256, bytes, mix, and maximum line length;
-Bun/platform/architecture/OS release/CPU model; all raw parse wall, process
-wall, and peak RSS samples; aggregation rules; observations; and checks.
+Bun/platform/architecture/OS release/CPU model; all per-run parse wall,
+process wall, and normalized peak RSS samples; aggregation rules;
+observations; and checks.
 
 It never serializes the temporary directory, cwd, home directory, username,
 hostname, environment variables, runner name, argv, or real source filenames.

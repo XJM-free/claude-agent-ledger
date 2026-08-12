@@ -9,9 +9,10 @@ import {
 	evaluateScale,
 	expectedMix,
 	generateSyntheticCorpus,
+	historicalInputFromReceipt,
 	measurementOrder,
 	median,
-	validatePeakRss,
+	normalizePeakRssBytes,
 	validateWorkerResult,
 	type BenchmarkCaseSummary,
 	type HistoricalComparisonInput,
@@ -56,6 +57,7 @@ function historical(
 			corpusVersion: 'synthetic-log-contract-v1',
 			generatorAlgorithm: 'fixed-16-round-robin-index-modulo-10-v1',
 			generatorSeed: 'none-fixed-sequence-v1',
+			peakRssNormalizationId: 'bun-1.3.13-rumaxrss-linux-kib-darwin-bytes-v1',
 			...overrides,
 		},
 		cases: [
@@ -102,6 +104,37 @@ describe('synthetic parser benchmark corpus', () => {
 			rmSync(firstRoot, { recursive: true, force: true });
 			rmSync(secondRoot, { recursive: true, force: true });
 		}
+	});
+
+	test('rejects pre-normalization receipt schemas', () => {
+		const receipt = {
+			schemaVersion: 1,
+			benchmark: 'parseAll-fixed-file-streaming',
+			profile: 'full',
+			corpus: {
+				version: 'synthetic-log-contract-v1',
+				generator: {
+					algorithm: 'fixed-16-round-robin-index-modulo-10-v1',
+					seed: 'none-fixed-sequence-v1',
+				},
+			},
+			environment: {
+				bunVersion: '1.3.13',
+				platform: 'linux',
+				arch: 'x64',
+				osRelease: 'synthetic-kernel-v1',
+				cpuModel: 'synthetic-cpu-v1',
+			},
+			measurement: {
+				peakRssNormalizationId: 'bun-1.3.13-rumaxrss-linux-kib-darwin-bytes-v1',
+			},
+			cases: historical().cases,
+		};
+		expect(() => historicalInputFromReceipt(receipt)).toThrow('missing comparison fields');
+		expect(
+			historicalInputFromReceipt({ ...receipt, schemaVersion: 2 }).identity
+				.peakRssNormalizationId,
+		).toBe('bun-1.3.13-rumaxrss-linux-kib-darwin-bytes-v1');
 	});
 
 	test('drains to 90 accepted, 10 ignored, and zero diagnostics', async () => {
@@ -172,10 +205,16 @@ describe('benchmark measurement contract', () => {
 	});
 
 	test('rejects missing, zero, and non-finite peak RSS', () => {
-		expect(validatePeakRss(1)).toBe(1);
-		expect(() => validatePeakRss(undefined)).toThrow();
-		expect(() => validatePeakRss(0)).toThrow();
-		expect(() => validatePeakRss(Number.NaN)).toThrow();
+		expect(normalizePeakRssBytes(127_432, 'linux', '1.3.13')).toBe(130_490_368);
+		expect(normalizePeakRssBytes(130_490_368, 'darwin', '1.3.13')).toBe(130_490_368);
+		expect(() => normalizePeakRssBytes(undefined, 'linux', '1.3.13')).toThrow();
+		expect(() => normalizePeakRssBytes(0, 'linux', '1.3.13')).toThrow();
+		expect(() => normalizePeakRssBytes(Number.NaN, 'linux', '1.3.13')).toThrow();
+		expect(() => normalizePeakRssBytes(1, 'win32', '1.3.13')).toThrow('unsupported');
+		expect(() => normalizePeakRssBytes(1, 'linux', '1.3.14')).toThrow('unverified');
+		expect(() =>
+			normalizePeakRssBytes(Number.MAX_SAFE_INTEGER, 'linux', '1.3.13'),
+		).toThrow('safe integer');
 	});
 
 	test('uses fresh-child Latin-square ordering and median aggregation', () => {
@@ -222,6 +261,12 @@ describe('benchmark measurement contract', () => {
 		).toMatchObject({ status: 'skipped', regressions: [] });
 		expect(
 			compareHistoricalBaseline(historical({ cpuModel: 'other-cpu' }), baseline),
+		).toMatchObject({ status: 'skipped', regressions: [] });
+		expect(
+			compareHistoricalBaseline(
+				historical({ peakRssNormalizationId: 'other-normalization' }),
+				baseline,
+			),
 		).toMatchObject({ status: 'skipped', regressions: [] });
 
 		const current = historical();
