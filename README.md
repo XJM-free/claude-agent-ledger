@@ -196,7 +196,9 @@ published standard rate on 2026-09-01. Pricing can change, so shadow costs are
 estimates rather than invoice replicas; check
 [`src/pricing.ts`](src/pricing.ts) and the
 [official pricing page](https://platform.claude.com/docs/en/about-claude/pricing)
-before making billing decisions.
+before making billing decisions. Historical aggregate, tree, and explain views
+select date-dependent rates from each turn's logged timestamp, so a scheduled
+price change does not retroactively reprice earlier usage.
 
 - [x] Log parser (JSONL streaming, recursive subagent discovery)
 - [x] Per-subagent aggregation

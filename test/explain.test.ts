@@ -1,5 +1,31 @@
 import { expect, test } from 'bun:test';
-import { llmExplain } from '../src/explain.ts';
+import { analyzeTurns, llmExplain } from '../src/explain.ts';
+import type { SessionTurn } from '../src/types.ts';
+
+function sonnet5Turn(timestamp: string): SessionTurn {
+	return {
+		type: 'assistant',
+		timestamp,
+		sessionId: 'pricing-boundary-session',
+		model: 'claude-sonnet-5',
+		usage: { input_tokens: 1_000_000, output_tokens: 1_000_000 },
+		raw: {},
+	};
+}
+
+test('historical explain prices each turn at its own timestamp', () => {
+	const analysis = analyzeTurns(
+		[
+			sonnet5Turn('2026-08-31T23:59:59Z'),
+			sonnet5Turn('2026-09-01T00:00:00Z'),
+		],
+		'pricing-boundary',
+	);
+
+	expect(analysis.totalCost).toBe(30);
+	expect(analysis.models.get('claude-sonnet-5')).toBe(30);
+	expect(analysis.topTurns.map((turn) => turn.cost)).toEqual([18, 12]);
+});
 
 test('LLM explain redacts the session identifier before the API request', async () => {
 	const originalFetch = globalThis.fetch;

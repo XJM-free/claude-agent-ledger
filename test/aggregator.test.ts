@@ -1,9 +1,21 @@
 import { describe, expect, test } from 'bun:test';
 import { join } from 'node:path';
-import { aggregate } from '../src/aggregator.ts';
+import { aggregate, Aggregator, SubagentGraph } from '../src/aggregator.ts';
 import { parseFile } from '../src/parser.ts';
+import type { SessionTurn } from '../src/types.ts';
 
 const FIXTURE = join(import.meta.dir, 'fixtures', 'sample.jsonl');
+
+function sonnet5Turn(timestamp: string): SessionTurn {
+	return {
+		type: 'assistant',
+		timestamp,
+		sessionId: 'pricing-boundary-session',
+		model: 'claude-sonnet-5',
+		usage: { input_tokens: 1_000_000, output_tokens: 1_000_000 },
+		raw: {},
+	};
+}
 
 describe('aggregate()', () => {
 	test('groups assistant turns by subagent', async () => {
@@ -71,5 +83,28 @@ describe('aggregate()', () => {
 		for (let i = 1; i < report.rows.length; i++) {
 			expect(report.rows[i - 1]!.subagent <= report.rows[i]!.subagent).toBe(true);
 		}
+	});
+
+	test('prices each turn at the rate effective for its timestamp', () => {
+		const from = new Date('2026-08-31T00:00:00Z');
+		const to = new Date('2026-09-01T23:59:59Z');
+		const aggregator = new Aggregator('day', from, to);
+		aggregator.add(sonnet5Turn('2026-08-31T23:59:59Z'));
+		aggregator.add(sonnet5Turn('2026-09-01T00:00:00Z'));
+
+		const report = aggregator.finalize();
+		expect(report.rows.map((row) => row.cost.totalCost)).toEqual([12, 18]);
+		expect(report.total.cost.totalCost).toBe(30);
+	});
+
+	test('subagent trees preserve historical rates across a price boundary', () => {
+		const graph = new SubagentGraph();
+		graph.add(sonnet5Turn('2026-08-31T23:59:59Z'));
+		graph.add(sonnet5Turn('2026-09-01T00:00:00Z'));
+
+		const roots = graph.finalize();
+		expect(roots).toHaveLength(1);
+		expect(roots[0]?.selfCost).toBe(30);
+		expect(roots[0]?.totalCost).toBe(30);
 	});
 });

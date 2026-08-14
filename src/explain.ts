@@ -11,7 +11,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { Glob } from 'bun';
 import { parseFile } from './parser.ts';
-import { costFor } from './pricing.ts';
+import { costFor, costForTimestamp } from './pricing.ts';
 import type { SessionTurn } from './types.ts';
 
 interface TurnAnalysis {
@@ -54,13 +54,14 @@ export async function analyzeSession(sessionPrefix: string): Promise<SessionAnal
 	if (!path) return undefined;
 	const turns: SessionTurn[] = [];
 	for await (const t of parseFile(path)) turns.push(t);
-	return analyze(turns, sessionPrefix);
+	return analyzeTurns(turns, sessionPrefix);
 }
 
-function analyze(turns: SessionTurn[], sessionPrefix: string): SessionAnalysis {
+export function analyzeTurns(turns: SessionTurn[], sessionPrefix: string): SessionAnalysis {
 	const analyses: TurnAnalysis[] = [];
 	const models = new Map<string, number>();
 	const tools = new Map<string, number>();
+	const pricingFallback = new Date();
 	let totalCost = 0;
 	let totalCacheRead = 0;
 	let totalCacheWrite = 0;
@@ -69,7 +70,12 @@ function analyze(turns: SessionTurn[], sessionPrefix: string): SessionAnalysis {
 	turns.forEach((turn, i) => {
 		if (turn.subagentType && !subagentType) subagentType = turn.subagentType;
 		if (turn.type !== 'assistant' || !turn.usage) return;
-		const c = costFor(turn.usage, turn.model).totalCost;
+		const c = costForTimestamp(
+			turn.usage,
+			turn.model,
+			turn.timestamp,
+			pricingFallback,
+		).totalCost;
 		totalCost += c;
 		const m = turn.model ?? '(no-model)';
 		models.set(m, (models.get(m) ?? 0) + c);
