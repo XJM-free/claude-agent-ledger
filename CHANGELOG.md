@@ -13,9 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   session identifier and avoiding identifier echo on failed anonymous lookups.
 - Reject unsupported flags and extra positional arguments in `explain` instead
   of silently ignoring them.
-- Validate session prefixes before glob lookup, avoid echoing raw local I/O
+- Validate session prefixes before local lookup, avoid echoing raw local I/O
   errors in anonymous mode, and never echo raw API transport errors that may
   contain paths, identifiers, or credentials.
+- Reject ambiguous `explain` prefixes instead of analyzing whichever matching
+  session log happens to be discovered first, while preferring an exact full ID
+  over longer IDs that share the same prefix.
+- Keep colliding session IDs in separate `--by session` rows and emit the
+  shortest directly resolvable display label, including collisions from logs
+  outside the requested date range. Reported duplicate full IDs or labels
+  outside the supported CLI form fail closed without printing IDs or paths.
 
 ## [0.7.2] — 2026-07-23
 

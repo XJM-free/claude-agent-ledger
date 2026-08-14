@@ -8,9 +8,8 @@
 //    "no cache reuse", "tool output overflow"). Typically costs <$0.005/run.
 
 import { homedir } from 'node:os';
-import { join } from 'node:path';
-import { Glob } from 'bun';
-import { parseFile } from './parser.ts';
+import { basename, join } from 'node:path';
+import { findSessionLogs, parseFile } from './parser.ts';
 import { costFor } from './pricing.ts';
 import type { SessionTurn } from './types.ts';
 
@@ -40,13 +39,42 @@ interface SessionAnalysis {
 
 const CLAUDE_PROJECTS_DIR = join(homedir(), '.claude', 'projects');
 
-async function findSessionFile(sessionPrefix: string): Promise<string | undefined> {
-	// Sessions are named `<uuid>.jsonl`. Match either full id or 8-char prefix.
-	const pattern = new Glob(`**/${sessionPrefix}*.jsonl`);
-	for await (const path of pattern.scan({ cwd: CLAUDE_PROJECTS_DIR, absolute: true })) {
-		return path;
+export class AmbiguousSessionError extends Error {
+	constructor() {
+		super('multiple sessions match the supplied ID');
+		this.name = 'AmbiguousSessionError';
 	}
-	return undefined;
+}
+
+export class DuplicateSessionFileError extends Error {
+	constructor() {
+		super('multiple local logs use the supplied full session ID');
+		this.name = 'DuplicateSessionFileError';
+	}
+}
+
+async function findSessionFile(sessionPrefix: string): Promise<string | undefined> {
+	// Sessions are named `<id>.jsonl`. Prefer one exact full-id match; otherwise
+	// accept only one prefix match from the same discovery path as aggregation.
+	let match: string | undefined;
+	let matchCount = 0;
+	let exactMatch: string | undefined;
+	let exactMatchCount = 0;
+	for await (const file of findSessionLogs(CLAUDE_PROJECTS_DIR)) {
+		const path = file.path;
+		const sessionId = basename(path, '.jsonl');
+		if (!sessionId.startsWith(sessionPrefix)) continue;
+		match ??= path;
+		matchCount++;
+		if (sessionId === sessionPrefix) {
+			exactMatch = path;
+			exactMatchCount++;
+		}
+	}
+	if (exactMatchCount === 1) return exactMatch;
+	if (exactMatchCount > 1) throw new DuplicateSessionFileError();
+	if (matchCount > 1) throw new AmbiguousSessionError();
+	return match;
 }
 
 export async function analyzeSession(sessionPrefix: string): Promise<SessionAnalysis | undefined> {

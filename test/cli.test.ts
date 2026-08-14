@@ -23,17 +23,20 @@ function runCli(args: string[], env: Record<string, string> = {}) {
 
 const explainSessionId = 'private-session-8f3a';
 
-function withExplainFixture<T>(run: (home: string, sessionPath: string) => T): T {
-	const home = mkdtempSync(join(tmpdir(), 'agent-ledger-explain-'));
-	const projectDir = join(home, '.claude', 'projects', '-synthetic');
+function writeExplainSession(
+	projectDir: string,
+	sessionId: string,
+	subagentType: string,
+	timestamp = '2026-08-14T00:00:00.000Z',
+): string {
 	mkdirSync(projectDir, { recursive: true });
-	const sessionPath = join(projectDir, `${explainSessionId}.jsonl`);
+	const sessionPath = join(projectDir, `${sessionId}.jsonl`);
 	writeFileSync(
 		sessionPath,
 		JSON.stringify({
 			type: 'assistant',
-			timestamp: '2026-08-14T00:00:00.000Z',
-			subagentType: 'secret-client-agent',
+			timestamp,
+			subagentType,
 			message: {
 				model: 'claude-sonnet-4-6',
 				usage: { input_tokens: 1_000, output_tokens: 100 },
@@ -42,6 +45,13 @@ function withExplainFixture<T>(run: (home: string, sessionPath: string) => T): T
 		}) + '\n',
 		'utf8',
 	);
+	return sessionPath;
+}
+
+function withExplainFixture<T>(run: (home: string, sessionPath: string) => T): T {
+	const home = mkdtempSync(join(tmpdir(), 'agent-ledger-explain-'));
+	const projectDir = join(home, '.claude', 'projects', '-synthetic');
+	const sessionPath = writeExplainSession(projectDir, explainSessionId, 'secret-client-agent');
 	try {
 		return run(home, sessionPath);
 	} finally {
@@ -121,6 +131,245 @@ describe('explain privacy flags', () => {
 		});
 	});
 
+	test('ambiguous prefixes are rejected instead of selecting the first session', () => {
+		withExplainFixture((home) => {
+			const secondSessionId = 'private-session-9b4c';
+			const longerSessionId = `${explainSessionId}-longer`;
+			writeExplainSession(
+				join(home, '.claude', 'projects', '-second-synthetic'),
+				secondSessionId,
+				'second-secret-agent',
+			);
+			writeExplainSession(
+				join(home, '.claude', 'projects', '-third-synthetic'),
+				longerSessionId,
+				'third-secret-agent',
+			);
+
+			for (const args of [
+				['explain', 'private-session'],
+				['explain', '--anonymize', 'private-session'],
+			]) {
+				const result = runCli(args, { HOME: home, ANTHROPIC_API_KEY: '' });
+				expect(result.exitCode).toBe(1);
+				expect(result.stdout).toBe('');
+				expect(result.stderr).toContain('multiple sessions match the supplied ID');
+				expect(result.stderr).toContain('agent-ledger week --by session');
+				expect(result.stderr).not.toContain(explainSessionId);
+				expect(result.stderr).not.toContain(secondSessionId);
+				expect(result.stderr).not.toContain(longerSessionId);
+				expect(result.stderr).not.toContain(home);
+			}
+
+			const stillAmbiguous = runCli(
+				['explain', '--anonymize', 'private-session-8'],
+				{ HOME: home, ANTHROPIC_API_KEY: '' },
+			);
+			expect(stillAmbiguous.exitCode).toBe(1);
+			expect(stillAmbiguous.stderr).not.toContain(explainSessionId);
+
+			for (const uniqueId of ['private-session-9', secondSessionId]) {
+				const result = runCli(['explain', '--anonymize', uniqueId], {
+					HOME: home,
+					ANTHROPIC_API_KEY: '',
+				});
+				expect(result.exitCode).toBe(0);
+				expect(result.stdout).toContain('# Session sess-A');
+				expect(result.stdout).not.toContain(explainSessionId);
+				expect(result.stdout).not.toContain(secondSessionId);
+				expect(result.stdout).not.toContain(longerSessionId);
+				expect(result.stderr).toBe('');
+			}
+
+			const exact = runCli(['explain', '--anonymize', explainSessionId], {
+				HOME: home,
+				ANTHROPIC_API_KEY: '',
+			});
+			expect(exact.exitCode).toBe(0);
+			expect(exact.stdout).toContain('secret-client-agent');
+			expect(exact.stdout).not.toContain('third-secret-agent');
+			expect(exact.stdout).not.toContain(explainSessionId);
+			expect(exact.stdout).not.toContain(longerSessionId);
+		});
+	});
+
+	test('--by session emits collision-safe prefixes that resolve through explain', () => {
+		const home = mkdtempSync(join(tmpdir(), 'agent-ledger-session-labels-'));
+		const projectsDir = join(home, '.claude', 'projects');
+		const currentTimestamp = new Date(Date.now() - 60_000).toISOString();
+		const sessions = [
+			{
+				id: 'agent-aa-current-one',
+				project: '-current-one',
+				subagent: 'first-session-agent',
+			},
+			{
+				id: 'agent-aa-current-two',
+				project: '-current-two',
+				subagent: 'second-session-agent',
+			},
+		];
+		const archivedId = 'agent-aa-current-old';
+		try {
+			for (const session of sessions) {
+				writeExplainSession(
+					join(projectsDir, session.project),
+					session.id,
+					session.subagent,
+					currentTimestamp,
+				);
+			}
+			writeExplainSession(
+				join(projectsDir, '-archived'),
+				archivedId,
+				'archived-session-agent',
+				'2000-01-01T00:00:00.000Z',
+			);
+
+			const result = runCli(['month', '--by', 'session', '--json'], { HOME: home });
+			expect(result.exitCode).toBe(0);
+			expect(result.stderr).toBe('');
+			const report = JSON.parse(result.stdout) as {
+				rows: Array<{ subagent: string; sessionCount: number; inputTokens: number }>;
+				total: { sessionCount: number };
+			};
+			expect(report.rows).toHaveLength(2);
+			expect(report.total.sessionCount).toBe(2);
+
+			for (const row of report.rows) {
+				expect(row.subagent.length).toBeGreaterThan(8);
+				expect(row.sessionCount).toBe(1);
+				expect(row.inputTokens).toBe(1_000);
+				const session = sessions.find(({ id }) => id.startsWith(row.subagent));
+				expect(session).toBeDefined();
+
+				const explained = runCli(['explain', row.subagent, '--anonymize'], {
+					HOME: home,
+					ANTHROPIC_API_KEY: '',
+				});
+				expect(explained.exitCode).toBe(0);
+				expect(explained.stdout).toContain('# Session sess-A');
+				expect(explained.stdout).toContain(session!.subagent);
+				expect(explained.stderr).toBe('');
+			}
+
+			for (const args of [
+				['month', '--by', 'session', '--anonymize'],
+				['month', '--by', 'session', '--json', '--anonymize'],
+			]) {
+				const anonymized = runCli(args, { HOME: home });
+				expect(anonymized.exitCode).toBe(0);
+				expect(anonymized.stderr).toBe('');
+				expect(anonymized.stdout).toContain('sess-A');
+				for (const session of sessions) {
+					expect(anonymized.stdout).not.toContain(session.id);
+				}
+				for (const row of report.rows) {
+					expect(anonymized.stdout).not.toContain(row.subagent);
+				}
+				expect(anonymized.stdout).not.toContain(archivedId);
+				expect(anonymized.stdout).not.toContain(home);
+			}
+		} finally {
+			rmSync(home, { recursive: true, force: true });
+		}
+	});
+
+	test('--by session rejects duplicated full ids without leaking either path', () => {
+		const home = mkdtempSync(join(tmpdir(), 'agent-ledger-duplicate-session-'));
+		const duplicateId = 'duplicate-private-session-id';
+		const timestamp = new Date(Date.now() - 60_000).toISOString();
+		try {
+			for (const project of ['-first-private-project', '-second-private-project']) {
+				writeExplainSession(
+					join(home, '.claude', 'projects', project),
+					duplicateId,
+					'duplicate-session-agent',
+					timestamp,
+				);
+			}
+
+			for (const args of [
+				['month', '--by', 'session'],
+				['month', '--by', 'session', '--json', '--anonymize'],
+			]) {
+				const result = runCli(args, { HOME: home });
+				expect(result.exitCode).toBe(1);
+				expect(result.stdout).toBe('');
+				expect(result.stderr).toContain('duplicate full session IDs');
+				expect(result.stderr).not.toContain(duplicateId);
+				expect(result.stderr).not.toContain(home);
+				expect(result.stderr).not.toContain('DuplicateSessionIdError');
+			}
+
+			for (const args of [
+				['explain', duplicateId],
+				['explain', duplicateId, '--anonymize'],
+			]) {
+				const result = runCli(args, { HOME: home, ANTHROPIC_API_KEY: '' });
+				expect(result.exitCode).toBe(1);
+				expect(result.stdout).toBe('');
+				expect(result.stderr).toContain('multiple local logs use this full session ID');
+				expect(result.stderr).not.toContain(duplicateId);
+				expect(result.stderr).not.toContain(home);
+				expect(result.stderr).not.toContain('DuplicateSessionFileError');
+			}
+		} finally {
+			rmSync(home, { recursive: true, force: true });
+		}
+	});
+
+	test('--by session rejects unsafe filename ids without echoing them', () => {
+		const home = mkdtempSync(join(tmpdir(), 'agent-ledger-unsafe-session-'));
+		const unsafeId = 'agent_bad-private-session';
+		try {
+			writeExplainSession(
+				join(home, '.claude', 'projects', '-private-project'),
+				unsafeId,
+				'unsafe-session-agent',
+				new Date(Date.now() - 60_000).toISOString(),
+			);
+
+			for (const args of [
+				['month', '--by', 'session'],
+				['month', '--by', 'session', '--json', '--anonymize'],
+			]) {
+				const result = runCli(args, { HOME: home });
+				expect(result.exitCode).toBe(1);
+				expect(result.stdout).toBe('');
+				expect(result.stderr).toContain('cannot be labeled safely for explain');
+				expect(result.stderr).not.toContain(unsafeId);
+				expect(result.stderr).not.toContain(home);
+				expect(result.stderr).not.toContain('UnsupportedSessionIdError');
+			}
+		} finally {
+			rmSync(home, { recursive: true, force: true });
+		}
+	});
+
+	test('anonymized session reports hide local read failures in text and JSON modes', () => {
+		withExplainFixture((home, sessionPath) => {
+			chmodSync(sessionPath, 0o000);
+			try {
+				for (const args of [
+					['month', '--by', 'session', '--anonymize'],
+					['month', '--by', 'session', '--json', '--anonymize'],
+				]) {
+					const result = runCli(args, { HOME: home });
+					expect(result.exitCode).toBe(1);
+					expect(result.stdout).toBe('');
+					expect(result.stderr).toContain('unable to inspect local session logs');
+					expect(result.stderr).not.toContain(explainSessionId);
+					expect(result.stderr).not.toContain(home);
+					expect(result.stderr).not.toContain('EACCES');
+					expect(result.stderr).not.toContain('error:');
+				}
+			} finally {
+				chmodSync(sessionPath, 0o600);
+			}
+		});
+	});
+
 	test('anonymized read failure does not echo paths or session identifiers', () => {
 		withExplainFixture((home, sessionPath) => {
 			chmodSync(sessionPath, 0o000);
@@ -143,7 +392,7 @@ describe('explain privacy flags', () => {
 		});
 	});
 
-	test('missing projects directory does not leak an anonymized home path', () => {
+	test('missing projects directory is a privacy-safe no-match', () => {
 		const home = mkdtempSync(join(tmpdir(), 'agent-ledger-empty-home-'));
 		try {
 			const missingId = 'missing-private-session';
@@ -153,7 +402,7 @@ describe('explain privacy flags', () => {
 			});
 			expect(result.exitCode).toBe(1);
 			expect(result.stdout).toBe('');
-			expect(result.stderr).toContain('unable to inspect local sessions');
+			expect(result.stderr).toContain('no session found matching the supplied ID');
 			expect(result.stderr).not.toContain(missingId);
 			expect(result.stderr).not.toContain(home);
 			expect(result.stderr).not.toContain('ENOENT');

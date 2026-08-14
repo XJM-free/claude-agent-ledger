@@ -52,4 +52,18 @@ describe('parseAll()', () => {
 
 		expect(report.rows.length).toBe(0);
 	});
+
+	test('reports every session log before filtering turns by date', async () => {
+		const discovered: string[] = [];
+		for await (const _turn of parseAll({
+			from: new Date('2030-01-01T00:00:00Z'),
+			to: new Date('2030-01-02T00:00:00Z'),
+			projectsDir: PROJECTS_DIR,
+			onSessionLog: (sessionId) => discovered.push(sessionId),
+		})) {
+			// The fixture has no turns in 2030; discovery still covers every log.
+		}
+
+		expect(discovered.sort()).toEqual(['agent-deadbeef', 'session-abc']);
+	});
 });

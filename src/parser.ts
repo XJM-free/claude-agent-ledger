@@ -12,6 +12,7 @@ export interface ParseOptions {
 	from?: Date;
 	to?: Date;
 	projectsDir?: string;
+	onSessionLog?: (sessionId: string) => void;
 }
 
 interface LogFile {
@@ -188,7 +189,10 @@ function extractTurn(
 export async function* parseAll(opts: ParseOptions = {}): AsyncGenerator<SessionTurn> {
 	const dir = opts.projectsDir ?? CLAUDE_PROJECTS_DIR;
 	const files: LogFile[] = [];
-	for await (const f of findSessionLogs(dir)) files.push(f);
+	for await (const f of findSessionLogs(dir)) {
+		files.push(f);
+		opts.onSessionLog?.(basename(f.path, '.jsonl'));
+	}
 
 	// Fan out file reads in batches of CONCURRENCY, yield turns in arrival order.
 	for (let i = 0; i < files.length; i += CONCURRENCY) {

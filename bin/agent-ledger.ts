@@ -1,6 +1,18 @@
 #!/usr/bin/env bun
-import { Aggregator, type GroupKey, SubagentGraph } from '../src/aggregator.ts';
-import { analyzeSession, formatHeuristic, llmExplain } from '../src/explain.ts';
+import {
+	Aggregator,
+	DuplicateSessionIdError,
+	type GroupKey,
+	SubagentGraph,
+	UnsupportedSessionIdError,
+} from '../src/aggregator.ts';
+import {
+	AmbiguousSessionError,
+	analyzeSession,
+	DuplicateSessionFileError,
+	formatHeuristic,
+	llmExplain,
+} from '../src/explain.ts';
 import { formatMarkdown, formatSummary, formatTable, formatTrend } from '../src/format.ts';
 import { parseAll } from '../src/parser.ts';
 import { isKnownModel } from '../src/pricing.ts';
@@ -82,7 +94,8 @@ Examples:
 function explainUsage(exitCode = 1): never {
 	const write = exitCode === 0 ? console.log : console.error;
 	write(`Usage: agent-ledger explain <sessionId> [--anonymize]
-  sessionId can be a full UUID or a letter, number, and hyphen prefix.`);
+  sessionId can be a full UUID or a letter, number, and hyphen prefix.
+  Prefixes must match exactly one local session.`);
 	process.exit(exitCode);
 }
 
@@ -300,6 +313,18 @@ async function explainCmd(sessionPrefix: string, anonymize: boolean): Promise<vo
 	try {
 		analysis = await analyzeSession(sessionPrefix);
 	} catch (error) {
+		if (error instanceof DuplicateSessionFileError) {
+			console.error('agent-ledger explain: multiple local logs use this full session ID');
+			console.error('  (remove or reconcile duplicate local log copies before retrying)');
+			process.exit(1);
+		}
+		if (error instanceof AmbiguousSessionError) {
+			console.error('agent-ledger explain: multiple sessions match the supplied ID');
+			console.error(
+				'  (use the prefix from `agent-ledger week --by session`, or the full ID)',
+			);
+			process.exit(1);
+		}
 		if (!anonymize) throw error;
 		console.error('agent-ledger explain: unable to inspect local sessions');
 		process.exit(1);
@@ -310,7 +335,9 @@ async function explainCmd(sessionPrefix: string, anonymize: boolean): Promise<vo
 				? 'agent-ledger explain: no session found matching the supplied ID'
 				: `agent-ledger explain: no session found matching '${sessionPrefix}'`,
 		);
-		console.error('  (try the 8-char prefix from `agent-ledger week --by session`)');
+		console.error(
+			'  (try the prefix from `agent-ledger week --by session`, or the full ID)',
+		);
 		process.exit(1);
 	}
 	const heuristic = formatHeuristic(
@@ -371,20 +398,33 @@ async function main(): Promise<void> {
 	const aggByProj = args.summary ? new Aggregator('project', from, to) : undefined;
 	const aggUser = !args.summary && !args.tree ? new Aggregator(args.by, from, to) : undefined;
 	const graph = args.tree ? new SubagentGraph() : undefined;
+	const allSessionIds = args.by === 'session' && aggUser ? [] as string[] : undefined;
 
 	let turnCount = 0;
 	const unknownModels = new Set<string>();
-	for await (const turn of parseAll({ from, to })) {
-		turnCount++;
-		if (turn.model && !isKnownModel(turn.model)) {
-			unknownModels.add(turn.model);
+	try {
+		for await (const turn of parseAll({
+			from,
+			to,
+			...(allSessionIds
+				? { onSessionLog: (sessionId: string) => allSessionIds.push(sessionId) }
+				: {}),
+		})) {
+			turnCount++;
+			if (turn.model && !isKnownModel(turn.model)) {
+				unknownModels.add(turn.model);
+			}
+			aggBySub.add(turn);
+			aggByMod?.add(turn);
+			aggByDay?.add(turn);
+			aggByProj?.add(turn);
+			aggUser?.add(turn);
+			graph?.add(turn);
 		}
-		aggBySub.add(turn);
-		aggByMod?.add(turn);
-		aggByDay?.add(turn);
-		aggByProj?.add(turn);
-		aggUser?.add(turn);
-		graph?.add(turn);
+	} catch (error) {
+		if (!args.anonymize) throw error;
+		console.error('agent-ledger: unable to inspect local session logs');
+		process.exit(1);
 	}
 
 	if (unknownModels.size > 0) {
@@ -434,7 +474,22 @@ async function main(): Promise<void> {
 			console.log(formatSummary(bySubR, byModR, byDayR, byProjR, args.period));
 		}
 	} else {
-		let report = aggUser!.finalize();
+		let report: LedgerReport;
+		try {
+			report = aggUser!.finalize(
+				allSessionIds ? { sessionIds: allSessionIds } : {},
+			);
+		} catch (error) {
+			if (error instanceof DuplicateSessionIdError) {
+				console.error(
+					'agent-ledger: duplicate full session IDs prevent an unambiguous --by session report',
+				);
+				process.exit(1);
+			}
+			if (!(error instanceof UnsupportedSessionIdError)) throw error;
+			console.error('agent-ledger: a reported session cannot be labeled safely for explain');
+			process.exit(1);
+		}
 		if (args.anonymize) report = anonymizeReport(report, args.by);
 		// Keep the unmasked estimate for --budget even when --plan hides it.
 		totalCost = report.total.cost.totalCost;

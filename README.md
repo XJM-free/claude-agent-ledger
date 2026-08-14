@@ -67,6 +67,16 @@ pass `--anonymize`; it replaces the displayed session identifier, but subagent,
 model, tool, timestamp, token, and cost evidence remains visible for review.
 The flag sanitizes command output only: the supplied identifier can still be
 visible in shell history and process arguments.
+Session prefixes must match exactly one local log. If a prefix is ambiguous,
+use the collision-safe prefix shown by `--by session` or the full session ID;
+the CLI does not list matching IDs or paths. Session reports group by full ID,
+then display the shortest directly resolvable label of at least eight characters
+(or the full ID when shorter) against every discovered local log, including
+logs outside the requested date range. Exact full IDs take precedence over
+longer IDs that begin with the same text. If a reported full ID exists at
+multiple paths, or no directly resolvable label has the CLI-safe alphanumeric-
+and-hyphen form, `--by session` fails closed with a generic error. `explain`
+likewise fails closed when the requested full ID exists at multiple paths.
 
 ## Why this and not `/cost`?
 

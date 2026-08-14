@@ -1,9 +1,26 @@
 import { describe, expect, test } from 'bun:test';
 import { join } from 'node:path';
-import { aggregate } from '../src/aggregator.ts';
+import {
+	Aggregator,
+	aggregate,
+	DuplicateSessionIdError,
+	UnsupportedSessionIdError,
+} from '../src/aggregator.ts';
 import { parseFile } from '../src/parser.ts';
+import type { SessionTurn } from '../src/types.ts';
 
 const FIXTURE = join(import.meta.dir, 'fixtures', 'sample.jsonl');
+
+function sessionTurn(sessionId: string, inputTokens: number): SessionTurn {
+	return {
+		type: 'assistant',
+		timestamp: '2026-04-21T12:00:00Z',
+		sessionId,
+		model: 'claude-sonnet-4-6',
+		usage: { input_tokens: inputTokens, output_tokens: 0 },
+		raw: {},
+	};
+}
 
 describe('aggregate()', () => {
 	test('groups assistant turns by subagent', async () => {
@@ -71,5 +88,90 @@ describe('aggregate()', () => {
 		for (let i = 1; i < report.rows.length; i++) {
 			expect(report.rows[i - 1]!.subagent <= report.rows[i]!.subagent).toBe(true);
 		}
+	});
+
+	test('--by session keeps colliding ids and their costs separate', () => {
+		const from = new Date('2026-04-21T00:00:00Z');
+		const to = new Date('2026-04-21T23:59:59Z');
+		const firstId = 'agent-aa-first';
+		const secondId = 'agent-aa-second';
+		const outsideId = 'agent-aa-third-outside';
+		const agg = new Aggregator('session', from, to);
+		agg.add(sessionTurn(firstId, 1_000_000));
+		agg.add(sessionTurn(secondId, 2_000_000));
+
+		const report = agg.finalize({ sessionIds: [outsideId, secondId, firstId] });
+		const rowsByLabel = new Map(report.rows.map((row) => [row.subagent, row]));
+
+		expect([...rowsByLabel.keys()].sort()).toEqual(['agent-aa-f', 'agent-aa-s']);
+		expect(rowsByLabel.get('agent-aa-f')!.inputTokens).toBe(1_000_000);
+		expect(rowsByLabel.get('agent-aa-s')!.inputTokens).toBe(2_000_000);
+		expect(report.rows.every((row) => row.sessionCount === 1)).toBe(true);
+		expect(report.total.sessionCount).toBe(2);
+	});
+
+	test('--by session labels are deterministic and preserve an exact shorter id', () => {
+		const from = new Date('2026-04-21T00:00:00Z');
+		const to = new Date('2026-04-21T23:59:59Z');
+		const shorterId = 'abcdefgh';
+		const longerId = 'abcdefgh-longer';
+		const agg = new Aggregator('session', from, to);
+		agg.add(sessionTurn(shorterId, 1));
+		agg.add(sessionTurn(longerId, 1));
+
+		const forward = agg.finalize({ sessionIds: [shorterId, longerId] });
+		const reverse = agg.finalize({ sessionIds: [longerId, shorterId] });
+
+		expect(forward.rows.map((row) => row.subagent).sort()).toEqual([
+			'abcdefgh',
+			'abcdefgh-',
+		]);
+		expect(reverse.rows.map((row) => row.subagent).sort()).toEqual(
+			forward.rows.map((row) => row.subagent).sort(),
+		);
+	});
+
+	test('--by session fails closed when full ids are duplicated across logs', () => {
+		const from = new Date('2026-04-21T00:00:00Z');
+		const to = new Date('2026-04-21T23:59:59Z');
+		const duplicateId = 'duplicate-session-id';
+		const agg = new Aggregator('session', from, to);
+		agg.add(sessionTurn(duplicateId, 1));
+
+		expect(() =>
+			agg.finalize({ sessionIds: [duplicateId, duplicateId] }),
+		).toThrow(DuplicateSessionIdError);
+	});
+
+	test('--by session ignores duplicated logs that have no row in the report', () => {
+		const from = new Date('2026-04-21T00:00:00Z');
+		const to = new Date('2026-04-21T23:59:59Z');
+		const currentId = 'current-session-id';
+		const outsideId = 'outside-session-id';
+		const agg = new Aggregator('session', from, to);
+		agg.add(sessionTurn(currentId, 1));
+
+		const report = agg.finalize({
+			sessionIds: [currentId, outsideId, outsideId],
+		});
+		expect(report.rows.map((row) => row.subagent)).toEqual(['current-']);
+	});
+
+	test('--by session rejects row ids that explain cannot accept safely', () => {
+		const from = new Date('2026-04-21T00:00:00Z');
+		const to = new Date('2026-04-21T23:59:59Z');
+		const agg = new Aggregator('session', from, to);
+		agg.add(sessionTurn('agent_bad-session', 1));
+
+		expect(() => agg.finalize()).toThrow(UnsupportedSessionIdError);
+	});
+
+	test('--by session accepts a safe prefix before unsupported filename characters', () => {
+		const from = new Date('2026-04-21T00:00:00Z');
+		const to = new Date('2026-04-21T23:59:59Z');
+		const agg = new Aggregator('session', from, to);
+		agg.add(sessionTurn('abcdefgh_unsupported-suffix', 1));
+
+		expect(agg.finalize().rows.map((row) => row.subagent)).toEqual(['abcdefgh']);
 	});
 });
