@@ -44,6 +44,7 @@ function usage(exitCode = 1): never {
 	write(`Usage:
   agent-ledger <today|week|month> [flags]    — aggregate views
   agent-ledger explain <sessionId>           — root-cause why one session was expensive (new in 0.6)
+  agent-ledger watch [seconds]                — refresh today's cost (2..2147483 seconds; default: 10)
 
 Flags:
   --summary                   One-screen dashboard (start here).
@@ -201,8 +202,35 @@ function planMask(report: LedgerReport, plan: Plan): LedgerReport {
 // `--watch` live-tail mode. Re-aggregates "today" every N seconds and
 // prints a clean delta meter. Polling-based (no inotify) so it works on
 // any platform Bun runs on. Ctrl-C to exit.
-async function watchCmd(intervalSec: number): Promise<void> {
-	const interval = Math.max(2, intervalSec);
+const MIN_WATCH_INTERVAL_SECONDS = 2;
+const MAX_WATCH_INTERVAL_SECONDS = Math.floor(2_147_483_647 / 1000);
+
+function watchUsageError(): never {
+	console.error(
+		`agent-ledger watch: interval must be a decimal integer from ${MIN_WATCH_INTERVAL_SECONDS} to ${MAX_WATCH_INTERVAL_SECONDS} seconds`,
+	);
+	console.error('Usage: agent-ledger watch [seconds]');
+	process.exit(1);
+}
+
+function parseWatchInterval(args: string[]): number {
+	if (args.length === 0) return 10;
+	const raw = args[0];
+	if (args.length !== 1 || raw === undefined || !/^[0-9]+$/.test(raw)) {
+		watchUsageError();
+	}
+	const interval = Number(raw);
+	if (
+		!Number.isSafeInteger(interval) ||
+		interval < MIN_WATCH_INTERVAL_SECONDS ||
+		interval > MAX_WATCH_INTERVAL_SECONDS
+	) {
+		watchUsageError();
+	}
+	return interval;
+}
+
+async function watchCmd(interval: number): Promise<void> {
 	let prevCost = 0;
 	let prevTurnCount = 0;
 	const t0 = Date.now();
@@ -289,7 +317,7 @@ async function main(): Promise<void> {
 		return explainCmd(process.argv[3]);
 	}
 	if (command === 'watch') {
-		const interval = Number(process.argv[3]) || 10;
+		const interval = parseWatchInterval(cliArgs.slice(1));
 		return watchCmd(interval);
 	}
 	const args = parseArgs(cliArgs);
