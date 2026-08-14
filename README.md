@@ -51,6 +51,8 @@ agent-ledger watch 4                        # refresh every 4s
 
 # Root-cause analysis on a single expensive session
 agent-ledger explain <session-id>           # heuristic: top-3 turns + tool/model breakdown
+agent-ledger explain <session-id> --anonymize
+                                            # replace the displayed session id with sess-A
 ANTHROPIC_API_KEY=sk-ant-... agent-ledger explain <session-id>
                                             # LLM mode: Haiku 4.5 ≤4-bullet root cause (typically <$0.005/run)
 ```
@@ -60,7 +62,11 @@ requests. `explain` is also local by default. If you explicitly set
 `ANTHROPIC_API_KEY`, it sends derived session metrics — subagent/model/tool
 names, timestamps, token counts, and cost totals — to the
 Anthropic API. The session identifier is redacted. It does **not** send prompts,
-responses, tool content, or project paths.
+responses, tool content, or project paths. For shareable local heuristic output,
+pass `--anonymize`; it replaces the displayed session identifier, but subagent,
+model, tool, timestamp, token, and cost evidence remains visible for review.
+The flag sanitizes command output only: the supplied identifier can still be
+visible in shell history and process arguments.
 
 ## Why this and not `/cost`?
 

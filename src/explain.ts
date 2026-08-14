@@ -202,8 +202,8 @@ In ≤4 bullets, identify the SPECIFIC root cause (not generic advice) and ONE c
 				).totalCost
 			: 0;
 		return `## LLM root-cause analysis (Haiku 4.5, ${fmtUsd(cost)})\n\n${text.trim()}`;
-	} catch (err) {
-		console.error('agent-ledger explain: LLM call failed —', err);
+	} catch {
+		console.error('agent-ledger explain: LLM call failed — falling back to heuristic');
 		return undefined;
 	}
 }

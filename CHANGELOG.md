@@ -5,6 +5,18 @@ All notable changes to `claude-agent-ledger` will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Honor `--anonymize` in `agent-ledger explain` by replacing the displayed
+  session identifier and avoiding identifier echo on failed anonymous lookups.
+- Reject unsupported flags and extra positional arguments in `explain` instead
+  of silently ignoring them.
+- Validate session prefixes before glob lookup, avoid echoing raw local I/O
+  errors in anonymous mode, and never echo raw API transport errors that may
+  contain paths, identifiers, or credentials.
+
 ## [0.7.2] — 2026-07-23
 
 ### Fixed
