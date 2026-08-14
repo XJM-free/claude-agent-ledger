@@ -1,9 +1,23 @@
 import { describe, expect, test } from 'bun:test';
 import { join } from 'node:path';
-import { aggregate } from '../src/aggregator.ts';
+import { aggregate, SubagentGraph } from '../src/aggregator.ts';
 import { parseFile } from '../src/parser.ts';
+import type { SessionTurn } from '../src/types.ts';
 
 const FIXTURE = join(import.meta.dir, 'fixtures', 'sample.jsonl');
+
+function pricedTurn(sessionId: string, parentSessionId?: string): SessionTurn {
+	return {
+		type: 'assistant',
+		timestamp: '2026-04-21T12:00:00Z',
+		sessionId,
+		subagentType: 'synthetic-agent',
+		parentSessionId,
+		model: 'claude-sonnet-4-6',
+		usage: { input_tokens: 1_000_000, output_tokens: 0 },
+		raw: null,
+	};
+}
 
 describe('aggregate()', () => {
 	test('groups assistant turns by subagent', async () => {
@@ -71,5 +85,31 @@ describe('aggregate()', () => {
 		for (let i = 1; i < report.rows.length; i++) {
 			expect(report.rows[i - 1]!.subagent <= report.rows[i]!.subagent).toBe(true);
 		}
+	});
+});
+
+describe('SubagentGraph', () => {
+	test('promotes an in-range child when its parent is outside the selected period', () => {
+		const graph = new SubagentGraph();
+		graph.add(pricedTurn('in-range-child', 'outside-period-parent'));
+
+		const roots = graph.finalize();
+		expect(roots).toHaveLength(1);
+		expect(roots[0]?.sessionId).toBe('in-range-child');
+		expect(roots[0]?.totalCost).toBeCloseTo(3, 6);
+	});
+
+	test('keeps an in-range child nested when its parent is present', () => {
+		const graph = new SubagentGraph();
+		graph.add(pricedTurn('in-range-parent'));
+		graph.add(pricedTurn('in-range-child', 'in-range-parent'));
+
+		const roots = graph.finalize();
+		expect(roots).toHaveLength(1);
+		expect(roots[0]?.sessionId).toBe('in-range-parent');
+		expect(roots[0]?.children.map((child) => child.sessionId)).toEqual([
+			'in-range-child',
+		]);
+		expect(roots[0]?.totalCost).toBeCloseTo(6, 6);
 	});
 });

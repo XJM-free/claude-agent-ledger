@@ -5,6 +5,13 @@ All notable changes to `claude-agent-ledger` will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Keep `--tree` grand totals and `--budget` checks complete when more than 20
+  roots exist, and display in-range children whose parent is outside the period.
+
 ## [0.7.2] — 2026-07-23
 
 ### Fixed

@@ -340,7 +340,6 @@ async function main(): Promise<void> {
 	if (args.tree) {
 		const rawRoots = graph!.finalize(20);
 		const roots = args.anonymize ? anonymizeTrees(rawRoots) : rawRoots;
-		totalCost = roots.reduce((s, r) => s + r.totalCost, 0);
 		const out =
 			args.json
 				? JSON.stringify({ roots, totalCost }, null, 2)

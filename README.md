@@ -127,6 +127,11 @@ metadata, and aggregates by your chosen key. Pricing is applied locally from
 `src/pricing.ts`. Aggregate commands never touch the network after install; the
 optional API-backed `explain` mode is disclosed in [Install](#install).
 
+The tree view displays up to 20 highest-cost roots. Its grand total and
+`--budget` check still include every selected turn, including roots outside the
+display cap. When a parent is outside the selected period, its in-range child is
+shown as a root instead of being dropped.
+
 ### Cache accounting
 
 Anthropic's prompt caching has two TTLs in current logs:
