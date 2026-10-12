@@ -241,6 +241,10 @@ session-ID sets; it does not retain every parsed turn.
 
 ## Install from source
 
+Fixes listed under **Unreleased** in [the changelog](CHANGELOG.md) are available
+from `main`. The npm package follows tagged releases; use the source install
+below to try changes that have not been published yet.
+
 ```bash
 git clone https://github.com/XJM-free/claude-agent-ledger.git
 cd claude-agent-ledger
