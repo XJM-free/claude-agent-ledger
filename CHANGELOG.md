@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   preserving the eight-file concurrency limit and date filtering.
 - Keep equal-cost rows and tree nodes deterministic when concurrent files
   complete in a different order.
+- Price historical aggregate, tree, and explain results at each turn's logged
+  timestamp so scheduled rate changes do not retroactively reprice older usage.
 
 ## [0.7.2] — 2026-07-23
 

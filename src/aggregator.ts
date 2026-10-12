@@ -1,4 +1,4 @@
-import { costFor } from './pricing.ts';
+import { costForTimestamp } from './pricing.ts';
 import type { AggregatedRow, LedgerReport, SessionTurn, SubagentTreeNode } from './types.ts';
 
 const MAIN_AGENT_LABEL = '(main)';
@@ -89,6 +89,7 @@ function compareTreeNodes(a: SubagentTreeNode, b: SubagentTreeNode): number {
 export class Aggregator {
 	private rowsByKey = new Map<string, AggregatedRow>();
 	private sessionsByKey = new Map<string, Set<string>>();
+	private readonly pricingFallback = new Date();
 
 	constructor(
 		private readonly group: GroupKey,
@@ -99,7 +100,12 @@ export class Aggregator {
 	add(turn: SessionTurn): void {
 		if (turn.type !== 'assistant' || !turn.usage) return;
 
-		const cost = costFor(turn.usage, turn.model);
+		const cost = costForTimestamp(
+			turn.usage,
+			turn.model,
+			turn.timestamp,
+			this.pricingFallback,
+		);
 		const { fiveMin, oneHour } = splitCache(turn);
 		const usage = turn.usage;
 		const keys = keysOf(turn, this.group);
@@ -189,10 +195,16 @@ interface SessionAccum {
 
 export class SubagentGraph {
 	private accums = new Map<string, SessionAccum>();
+	private readonly pricingFallback = new Date();
 
 	add(turn: SessionTurn): void {
 		if (turn.type !== 'assistant' || !turn.usage) return;
-		const cost = costFor(turn.usage, turn.model).totalCost;
+		const cost = costForTimestamp(
+			turn.usage,
+			turn.model,
+			turn.timestamp,
+			this.pricingFallback,
+		).totalCost;
 		let acc = this.accums.get(turn.sessionId);
 		if (!acc) {
 			acc = {
