@@ -12,6 +12,7 @@ export interface ParseOptions {
 	from?: Date;
 	to?: Date;
 	projectsDir?: string;
+	onSessionLog?: (sessionId: string) => void;
 }
 
 export interface LogFile {
@@ -306,6 +307,9 @@ export async function* streamLogFiles(
 export async function* parseAll(opts: ParseOptions = {}): AsyncGenerator<SessionTurn> {
 	const dir = opts.projectsDir ?? CLAUDE_PROJECTS_DIR;
 	const files: LogFile[] = [];
-	for await (const file of findSessionLogs(dir)) files.push(file);
+	for await (const file of findSessionLogs(dir)) {
+		files.push(file);
+		opts.onSessionLog?.(basename(file.path, '.jsonl'));
+	}
 	yield* streamLogFiles(files, opts);
 }
