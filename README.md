@@ -198,7 +198,7 @@ estimates rather than invoice replicas; check
 [official pricing page](https://platform.claude.com/docs/en/about-claude/pricing)
 before making billing decisions.
 
-- [x] Log parser (JSONL streaming, recursive subagent discovery)
+- [x] Log parser (bounded JSONL streaming, recursive subagent discovery)
 - [x] Per-subagent aggregation
 - [x] Per-model aggregation (`--by model`)
 - [x] Per-day aggregation with bar chart (`--by day`)
@@ -210,6 +210,11 @@ before making billing decisions.
 - [ ] Cost forecasting (trailing 7-day burn rate)
 - [ ] Calibration against real Anthropic invoices
 - [ ] Homebrew tap
+
+The parser reads up to eight JSONL files concurrently and keeps at most one
+in-flight or ready turn per active file. It still retains discovered file
+paths, each stream's decode buffer, the aggregator's unique grouping keys, and
+session-ID sets; it does not retain every parsed turn.
 
 ## Install from source
 
@@ -224,7 +229,7 @@ agent-ledger today
 ## Development
 
 ```bash
-bun test           # 35 pass, 0 fail
+bun test
 bun run typecheck
 bun run build
 ```

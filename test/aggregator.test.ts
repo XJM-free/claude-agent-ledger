@@ -1,9 +1,27 @@
 import { describe, expect, test } from 'bun:test';
 import { join } from 'node:path';
-import { aggregate } from '../src/aggregator.ts';
+import { aggregate, Aggregator, SubagentGraph } from '../src/aggregator.ts';
 import { parseFile } from '../src/parser.ts';
+import type { SessionTurn } from '../src/types.ts';
 
 const FIXTURE = join(import.meta.dir, 'fixtures', 'sample.jsonl');
+
+function zeroCostTurn(
+	sessionId: string,
+	subagentType: string,
+	parentSessionId?: string,
+): SessionTurn {
+	return {
+		type: 'assistant',
+		timestamp: '2026-04-21T12:00:00Z',
+		sessionId,
+		subagentType,
+		parentSessionId,
+		model: '<synthetic>',
+		usage: { input_tokens: 0, output_tokens: 0 },
+		raw: null,
+	};
+}
 
 describe('aggregate()', () => {
 	test('groups assistant turns by subagent', async () => {
@@ -71,5 +89,29 @@ describe('aggregate()', () => {
 		for (let i = 1; i < report.rows.length; i++) {
 			expect(report.rows[i - 1]!.subagent <= report.rows[i]!.subagent).toBe(true);
 		}
+	});
+
+	test('equal-cost rows use a stable label tie-breaker', () => {
+		const from = new Date('2026-04-21T00:00:00Z');
+		const to = new Date('2026-04-21T23:59:59Z');
+		const aggregator = new Aggregator('subagent', from, to);
+		aggregator.add(zeroCostTurn('session-z', 'zeta'));
+		aggregator.add(zeroCostTurn('session-a', 'alpha'));
+
+		expect(aggregator.finalize().rows.map((row) => row.subagent)).toEqual([
+			'alpha',
+			'zeta',
+		]);
+	});
+
+	test('equal-cost tree nodes use a stable session tie-breaker', () => {
+		const graph = new SubagentGraph();
+		graph.add(zeroCostTurn('root-z', 'zeta'));
+		graph.add(zeroCostTurn('root-a', 'alpha'));
+
+		expect(graph.finalize().map((node) => node.sessionId)).toEqual([
+			'root-a',
+			'root-z',
+		]);
 	});
 });
