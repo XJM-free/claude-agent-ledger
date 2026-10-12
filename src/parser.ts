@@ -12,14 +12,19 @@ export interface ParseOptions {
 	from?: Date;
 	to?: Date;
 	projectsDir?: string;
+	onSessionLog?: (sessionId: string) => void;
 }
 
-interface LogFile {
+export interface LogFile {
 	path: string;
 	projectId: string;
 	subagentType: string | undefined;
 	parentSessionId?: string | undefined; // for subagent logs, the parent session
 }
+
+type ReadyOutcome<T> =
+	| { index: number; ok: true; result: IteratorResult<T> }
+	| { index: number; ok: false; error: unknown };
 
 export async function* findSessionLogs(
 	projectsDir: string = CLAUDE_PROJECTS_DIR,
@@ -30,7 +35,7 @@ export async function* findSessionLogs(
 	} catch {
 		return;
 	}
-	// Parallelize the project-level walks; collect LogFiles via streaming queue.
+	// Parallelize project-level walks, then retain the discovered file metadata.
 	const walkers = projects.map((project) =>
 		collectWalk(join(projectsDir, project), project),
 	);
@@ -183,35 +188,128 @@ function extractTurn(
 	};
 }
 
+// Yield whichever stream produces a value first. Each iterator has at most one
+// in-flight or ready turn, so memory is bounded by the number of active streams
+// instead of the number of turns in each stream.
+export async function* mergeAsyncIterables<T>(
+	streams: AsyncIterable<T>[],
+): AsyncGenerator<T> {
+	const iterators: AsyncIterator<T>[] = [];
+	const finished: boolean[] = [];
+	const ready: ReadyOutcome<T>[] = [];
+	let resume: (() => void) | undefined;
+	let active = 0;
+
+	const enqueue = (outcome: ReadyOutcome<T>): void => {
+		ready.push(outcome);
+		const wake = resume;
+		resume = undefined;
+		wake?.();
+	};
+
+	const schedule = (index: number): void => {
+		const iterator = iterators[index];
+		if (!iterator) return;
+		try {
+			void iterator.next().then(
+				(result) => enqueue({ index, ok: true, result }),
+				(error: unknown) => enqueue({ index, ok: false, error }),
+			);
+		} catch (error) {
+			enqueue({ index, ok: false, error });
+		}
+	};
+
+	const nextReady = async (): Promise<ReadyOutcome<T> | undefined> => {
+		while (ready.length === 0 && active > 0) {
+			await new Promise<void>((resolve) => {
+				resume = resolve;
+			});
+		}
+		return ready.shift();
+	};
+
+	try {
+		// Acquire every iterator before starting reads. If a later factory throws,
+		// no earlier source has an in-flight next() that could prevent cleanup.
+		for (const stream of streams) {
+			iterators.push(stream[Symbol.asyncIterator]());
+			finished.push(false);
+		}
+		active = iterators.length;
+		for (let index = 0; index < iterators.length; index++) schedule(index);
+
+		while (active > 0) {
+			const outcome = await nextReady();
+			if (!outcome) continue;
+			const { index } = outcome;
+			if (!outcome.ok) throw outcome.error;
+			const { result } = outcome;
+			if (result.done) {
+				finished[index] = true;
+				active--;
+				continue;
+			}
+			schedule(index);
+			yield result.value;
+		}
+	} finally {
+		// AsyncIterator.return() cannot interrupt every outstanding next() (an
+		// async generator may queue it behind a blocked read). Request cleanup,
+		// but do not make consumer cancellation wait on an uncooperative source.
+		for (let index = 0; index < iterators.length; index++) {
+			if (finished[index]) continue;
+			const iterator = iterators[index];
+			if (!iterator) continue;
+			try {
+				void iterator.return?.().catch(() => undefined);
+			} catch {
+				// Cleanup is best-effort after completion, cancellation, or an error.
+			}
+		}
+	}
+}
+
+async function* filterByRange(
+	turns: AsyncIterable<SessionTurn>,
+	opts: ParseOptions,
+): AsyncGenerator<SessionTurn> {
+	for await (const turn of turns) {
+		if (opts.from && new Date(turn.timestamp) < opts.from) continue;
+		if (opts.to && new Date(turn.timestamp) > opts.to) continue;
+		yield turn;
+	}
+}
+
+type LogReader = typeof parseFile;
+
+export async function* streamLogFiles(
+	files: LogFile[],
+	opts: ParseOptions = {},
+	readLog: LogReader = parseFile,
+): AsyncGenerator<SessionTurn> {
+	// Fan out file reads in batches of CONCURRENCY and merge them with one
+	// in-flight or ready turn per file.
+	for (let i = 0; i < files.length; i += CONCURRENCY) {
+		const batch = files.slice(i, i + CONCURRENCY);
+		const streams = batch.map((file) =>
+			filterByRange(
+				readLog(file.path, file.subagentType, file.projectId, file.parentSessionId),
+				opts,
+			),
+		);
+		yield* mergeAsyncIterables(streams);
+	}
+}
+
 // Parallelized, streaming. Does not materialize all turns — caller iterates
 // once and dispatches to aggregators. Reads up to CONCURRENCY files at a time.
 export async function* parseAll(opts: ParseOptions = {}): AsyncGenerator<SessionTurn> {
 	const dir = opts.projectsDir ?? CLAUDE_PROJECTS_DIR;
 	const files: LogFile[] = [];
-	for await (const f of findSessionLogs(dir)) files.push(f);
-
-	// Fan out file reads in batches of CONCURRENCY, yield turns in arrival order.
-	for (let i = 0; i < files.length; i += CONCURRENCY) {
-		const batch = files.slice(i, i + CONCURRENCY);
-		const streams = batch.map((f) =>
-			collectBatch(parseFile(f.path, f.subagentType, f.projectId, f.parentSessionId), opts),
-		);
-		const results = await Promise.all(streams);
-		for (const turns of results) {
-			for (const t of turns) yield t;
-		}
+	for await (const file of findSessionLogs(dir)) {
+		files.push(file);
+		opts.onSessionLog?.(basename(file.path, '.jsonl'));
 	}
-}
-
-async function collectBatch(
-	gen: AsyncGenerator<SessionTurn>,
-	opts: ParseOptions,
-): Promise<SessionTurn[]> {
-	const out: SessionTurn[] = [];
-	for await (const t of gen) {
-		if (opts.from && new Date(t.timestamp) < opts.from) continue;
-		if (opts.to && new Date(t.timestamp) > opts.to) continue;
-		out.push(t);
-	}
-	return out;
+	yield* streamLogFiles(files, opts);
 }

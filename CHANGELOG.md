@@ -5,6 +5,36 @@ All notable changes to `claude-agent-ledger` will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Keep concurrent JSONL parsing bounded to one pending turn per active file.
+  The previous batch implementation drained as many as eight complete logs and
+  retained every in-range turn in arrays before yielding.
+- Yield turns without waiting for every file in the batch to reach EOF, while
+  preserving the eight-file concurrency limit and date filtering.
+- Keep equal-cost rows and tree nodes deterministic when concurrent files
+  complete in a different order.
+- Price historical aggregate, tree, and explain results at each turn's logged
+  timestamp so scheduled rate changes do not retroactively reprice older usage.
+- Honor `--anonymize` in `agent-ledger explain` by replacing the displayed
+  session identifier and avoiding identifier echo on failed anonymous lookups.
+- Reject unsupported flags and extra positional arguments in `explain` instead
+  of silently ignoring them.
+- Validate session prefixes before local lookup, avoid echoing raw local I/O
+  errors in anonymous mode, and never echo raw API transport errors that may
+  contain paths, identifiers, or credentials.
+- Reject ambiguous `explain` prefixes instead of analyzing whichever matching
+  session log happens to be discovered first, while preferring an exact full ID
+  over longer IDs that share the same prefix.
+- Keep colliding session IDs in separate `--by session` rows and emit the
+  shortest directly resolvable display label, including collisions from logs
+  outside the requested date range. Reported duplicate full IDs or labels
+  outside the supported CLI form fail closed without printing IDs or paths.
+- Keep `--tree` grand totals and `--budget` checks complete when more than 20
+  roots exist, and display in-range children whose parent is outside the period.
+
 ## [0.7.2] — 2026-07-23
 
 ### Fixed

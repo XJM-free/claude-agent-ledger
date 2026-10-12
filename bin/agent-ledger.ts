@@ -1,6 +1,18 @@
 #!/usr/bin/env bun
-import { Aggregator, type GroupKey, SubagentGraph } from '../src/aggregator.ts';
-import { analyzeSession, formatHeuristic, llmExplain } from '../src/explain.ts';
+import {
+	Aggregator,
+	DuplicateSessionIdError,
+	type GroupKey,
+	SubagentGraph,
+	UnsupportedSessionIdError,
+} from '../src/aggregator.ts';
+import {
+	AmbiguousSessionError,
+	analyzeSession,
+	DuplicateSessionFileError,
+	formatHeuristic,
+	llmExplain,
+} from '../src/explain.ts';
 import { formatMarkdown, formatSummary, formatTable, formatTrend } from '../src/format.ts';
 import { parseAll } from '../src/parser.ts';
 import { isKnownModel } from '../src/pricing.ts';
@@ -43,7 +55,9 @@ function usage(exitCode = 1): never {
 	const write = exitCode === 0 ? console.log : console.error;
 	write(`Usage:
   agent-ledger <today|week|month> [flags]    — aggregate views
-  agent-ledger explain <sessionId>           — root-cause why one session was expensive (new in 0.6)
+  agent-ledger explain <sessionId> [--anonymize]
+                                             — root-cause why one session was expensive (new in 0.6)
+  agent-ledger watch [seconds]                — refresh today's cost (2..2147483 seconds; default: 10)
 
 Flags:
   --summary                   One-screen dashboard (start here).
@@ -75,6 +89,14 @@ Examples:
   agent-ledger week --json | jq '.total.cost.totalCost'
   agent-ledger today --budget 50            # CI gate: fail if today > $50
 `);
+	process.exit(exitCode);
+}
+
+function explainUsage(exitCode = 1): never {
+	const write = exitCode === 0 ? console.log : console.error;
+	write(`Usage: agent-ledger explain <sessionId> [--anonymize]
+  sessionId can be a full UUID or a letter, number, and hyphen prefix.
+  Prefixes must match exactly one local session.`);
 	process.exit(exitCode);
 }
 
@@ -146,6 +168,47 @@ function parseArgs(argv: string[]): Args {
 	};
 }
 
+interface ExplainArgs {
+	sessionPrefix: string;
+	anonymize: boolean;
+}
+
+function parseExplainArgs(argv: string[]): ExplainArgs {
+	let sessionPrefix: string | undefined;
+	let anonymize = false;
+
+	for (const arg of argv) {
+		if (arg === '--anonymize') {
+			anonymize = true;
+			continue;
+		}
+		if (arg.startsWith('-')) {
+			console.error(
+				'agent-ledger explain: unsupported flag (only --anonymize is accepted)',
+			);
+			explainUsage();
+		}
+		if (sessionPrefix !== undefined) {
+			console.error('agent-ledger explain: expected exactly one sessionId argument');
+			explainUsage();
+		}
+		sessionPrefix = arg;
+	}
+
+	if (!sessionPrefix) {
+		console.error('agent-ledger explain: missing sessionId argument');
+		explainUsage();
+	}
+	if (!/^[A-Za-z0-9-]+$/.test(sessionPrefix)) {
+		console.error(
+			'agent-ledger explain: sessionId may contain only letters, numbers, and hyphens',
+		);
+		explainUsage();
+	}
+
+	return { sessionPrefix, anonymize };
+}
+
 function anonymizeReport(report: LedgerReport, group: GroupKey): LedgerReport {
 	if (group !== 'project' && group !== 'session') return report;
 	const prefix = group === 'project' ? '~/repo-' : 'sess-';
@@ -201,8 +264,35 @@ function planMask(report: LedgerReport, plan: Plan): LedgerReport {
 // `--watch` live-tail mode. Re-aggregates "today" every N seconds and
 // prints a clean delta meter. Polling-based (no inotify) so it works on
 // any platform Bun runs on. Ctrl-C to exit.
-async function watchCmd(intervalSec: number): Promise<void> {
-	const interval = Math.max(2, intervalSec);
+const MIN_WATCH_INTERVAL_SECONDS = 2;
+const MAX_WATCH_INTERVAL_SECONDS = Math.floor(2_147_483_647 / 1000);
+
+function watchUsageError(): never {
+	console.error(
+		`agent-ledger watch: interval must be a decimal integer from ${MIN_WATCH_INTERVAL_SECONDS} to ${MAX_WATCH_INTERVAL_SECONDS} seconds`,
+	);
+	console.error('Usage: agent-ledger watch [seconds]');
+	process.exit(1);
+}
+
+function parseWatchInterval(args: string[]): number {
+	if (args.length === 0) return 10;
+	const raw = args[0];
+	if (args.length !== 1 || raw === undefined || !/^[0-9]+$/.test(raw)) {
+		watchUsageError();
+	}
+	const interval = Number(raw);
+	if (
+		!Number.isSafeInteger(interval) ||
+		interval < MIN_WATCH_INTERVAL_SECONDS ||
+		interval > MAX_WATCH_INTERVAL_SECONDS
+	) {
+		watchUsageError();
+	}
+	return interval;
+}
+
+async function watchCmd(interval: number): Promise<void> {
 	let prevCost = 0;
 	let prevTurnCount = 0;
 	const t0 = Date.now();
@@ -246,20 +336,41 @@ async function watchCmd(intervalSec: number): Promise<void> {
 
 const fmtUsdInline = (n: number): string => '$' + n.toFixed(n < 0.01 ? 4 : 2);
 
-async function explainCmd(sessionPrefix: string | undefined): Promise<void> {
-	if (!sessionPrefix) {
-		console.error('agent-ledger explain: missing sessionId argument');
-		console.error('Usage: agent-ledger explain <sessionId>');
-		console.error('       (sessionId can be a full uuid or 8-char prefix)');
+async function explainCmd(sessionPrefix: string, anonymize: boolean): Promise<void> {
+	let analysis: Awaited<ReturnType<typeof analyzeSession>>;
+	try {
+		analysis = await analyzeSession(sessionPrefix);
+	} catch (error) {
+		if (error instanceof DuplicateSessionFileError) {
+			console.error('agent-ledger explain: multiple local logs use this full session ID');
+			console.error('  (remove or reconcile duplicate local log copies before retrying)');
+			process.exit(1);
+		}
+		if (error instanceof AmbiguousSessionError) {
+			console.error('agent-ledger explain: multiple sessions match the supplied ID');
+			console.error(
+				'  (use the prefix from `agent-ledger week --by session`, or the full ID)',
+			);
+			process.exit(1);
+		}
+		if (!anonymize) throw error;
+		console.error('agent-ledger explain: unable to inspect local sessions');
 		process.exit(1);
 	}
-	const analysis = await analyzeSession(sessionPrefix);
 	if (!analysis) {
-		console.error(`agent-ledger explain: no session found matching '${sessionPrefix}'`);
-		console.error('  (try the 8-char prefix from `agent-ledger week --by session`)');
+		console.error(
+			anonymize
+				? 'agent-ledger explain: no session found matching the supplied ID'
+				: `agent-ledger explain: no session found matching '${sessionPrefix}'`,
+		);
+		console.error(
+			'  (try the prefix from `agent-ledger week --by session`, or the full ID)',
+		);
 		process.exit(1);
 	}
-	const heuristic = formatHeuristic(analysis);
+	const heuristic = formatHeuristic(
+		anonymize ? { ...analysis, sessionId: 'sess-A' } : analysis,
+	);
 	console.log(heuristic);
 	const llm = await llmExplain(analysis);
 	if (llm) {
@@ -276,7 +387,21 @@ async function explainCmd(sessionPrefix: string | undefined): Promise<void> {
 async function main(): Promise<void> {
 	const cliArgs = process.argv.slice(2);
 	const command = cliArgs[0];
-	if (command === 'help' || cliArgs.includes('--help') || cliArgs.includes('-h')) {
+	if (command === 'help') {
+		usage(0);
+	}
+	if (command === 'explain') {
+		const explainArgv = cliArgs.slice(1);
+		if (
+			explainArgv.length === 1 &&
+			(explainArgv[0] === '--help' || explainArgv[0] === '-h')
+		) {
+			explainUsage(0);
+		}
+		const args = parseExplainArgs(explainArgv);
+		return explainCmd(args.sessionPrefix, args.anonymize);
+	}
+	if (cliArgs.includes('--help') || cliArgs.includes('-h')) {
 		usage(0);
 	}
 	if (command === '--version' || command === '-v') {
@@ -285,11 +410,8 @@ async function main(): Promise<void> {
 	}
 
 	// Subcommand dispatch.
-	if (command === 'explain') {
-		return explainCmd(process.argv[3]);
-	}
 	if (command === 'watch') {
-		const interval = Number(process.argv[3]) || 10;
+		const interval = parseWatchInterval(cliArgs.slice(1));
 		return watchCmd(interval);
 	}
 	const args = parseArgs(cliArgs);
@@ -304,20 +426,33 @@ async function main(): Promise<void> {
 	const aggByProj = args.summary ? new Aggregator('project', from, to) : undefined;
 	const aggUser = !args.summary && !args.tree ? new Aggregator(args.by, from, to) : undefined;
 	const graph = args.tree ? new SubagentGraph() : undefined;
+	const allSessionIds = args.by === 'session' && aggUser ? [] as string[] : undefined;
 
 	let turnCount = 0;
 	const unknownModels = new Set<string>();
-	for await (const turn of parseAll({ from, to })) {
-		turnCount++;
-		if (turn.model && !isKnownModel(turn.model)) {
-			unknownModels.add(turn.model);
+	try {
+		for await (const turn of parseAll({
+			from,
+			to,
+			...(allSessionIds
+				? { onSessionLog: (sessionId: string) => allSessionIds.push(sessionId) }
+				: {}),
+		})) {
+			turnCount++;
+			if (turn.model && !isKnownModel(turn.model)) {
+				unknownModels.add(turn.model);
+			}
+			aggBySub.add(turn);
+			aggByMod?.add(turn);
+			aggByDay?.add(turn);
+			aggByProj?.add(turn);
+			aggUser?.add(turn);
+			graph?.add(turn);
 		}
-		aggBySub.add(turn);
-		aggByMod?.add(turn);
-		aggByDay?.add(turn);
-		aggByProj?.add(turn);
-		aggUser?.add(turn);
-		graph?.add(turn);
+	} catch (error) {
+		if (!args.anonymize) throw error;
+		console.error('agent-ledger: unable to inspect local session logs');
+		process.exit(1);
 	}
 
 	if (unknownModels.size > 0) {
@@ -340,7 +475,6 @@ async function main(): Promise<void> {
 	if (args.tree) {
 		const rawRoots = graph!.finalize(20);
 		const roots = args.anonymize ? anonymizeTrees(rawRoots) : rawRoots;
-		totalCost = roots.reduce((s, r) => s + r.totalCost, 0);
 		const out =
 			args.json
 				? JSON.stringify({ roots, totalCost }, null, 2)
@@ -367,7 +501,22 @@ async function main(): Promise<void> {
 			console.log(formatSummary(bySubR, byModR, byDayR, byProjR, args.period));
 		}
 	} else {
-		let report = aggUser!.finalize();
+		let report: LedgerReport;
+		try {
+			report = aggUser!.finalize(
+				allSessionIds ? { sessionIds: allSessionIds } : {},
+			);
+		} catch (error) {
+			if (error instanceof DuplicateSessionIdError) {
+				console.error(
+					'agent-ledger: duplicate full session IDs prevent an unambiguous --by session report',
+				);
+				process.exit(1);
+			}
+			if (!(error instanceof UnsupportedSessionIdError)) throw error;
+			console.error('agent-ledger: a reported session cannot be labeled safely for explain');
+			process.exit(1);
+		}
 		if (args.anonymize) report = anonymizeReport(report, args.by);
 		// Keep the unmasked estimate for --budget even when --plan hides it.
 		totalCost = report.total.cost.totalCost;
