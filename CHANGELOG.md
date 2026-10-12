@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Validate log record shapes, timestamps and token counters before aggregation;
+  report skipped records without printing their contents. Directory discovery
+  now terminates on symlink cycles. Public author attribution uses a pseudonym.
 - Keep concurrent JSONL parsing bounded to one pending turn per active file.
   The previous batch implementation drained as many as eight complete logs and
   retained every in-range turn in arrays before yielding.
@@ -171,7 +174,7 @@ agent-ledger explain b988bd89-803a-4c78    # full uuid or 8-char prefix both wor
 
 ### Added
 - `--by project` — group spend by Claude Code project directory.
-  Decodes `~/.claude/projects/-Users-xiangjie-clawbot` → `~/clawbot` so you can
+  Decodes `~/.claude/projects/-Users-example-project` → `~/project` so you can
   see which project is burning budget.
 - `--by session` — group by session ID. Surfaces the single most expensive
   conversations (useful for hunting the one that went sideways).

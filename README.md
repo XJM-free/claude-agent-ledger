@@ -238,6 +238,10 @@ The parser reads up to eight JSONL files concurrently and keeps at most one
 in-flight or ready turn per active file. It still retains discovered file
 paths, each stream's decode buffer, the aggregator's unique grouping keys, and
 session-ID sets; it does not retain every parsed turn.
+Records with malformed JSON, invalid timestamps, or invalid token counters are
+skipped. Aggregate commands report the skipped count on stderr so incomplete
+cost evidence stays visible while JSON output remains machine-readable.
+Missing timestamps are never replaced with the current time.
 
 ## Install from source
 
@@ -263,8 +267,8 @@ bun run build
 
 ## Author
 
-Built by [Jie Xiang](https://jiexiang.dev)
-([@XJM-free](https://github.com/XJM-free)).
+Built by [Quiet Orbit](https://github.com/XJM-free)
+([Quiet Orbit](https://github.com/XJM-free)).
 
 ## License
 

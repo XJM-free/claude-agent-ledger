@@ -429,11 +429,13 @@ async function main(): Promise<void> {
 	const allSessionIds = args.by === 'session' && aggUser ? [] as string[] : undefined;
 
 	let turnCount = 0;
+	let skippedRecordCount = 0;
 	const unknownModels = new Set<string>();
 	try {
 		for await (const turn of parseAll({
 			from,
 			to,
+			onSkippedRecord: () => { skippedRecordCount++; },
 			...(allSessionIds
 				? { onSessionLog: (sessionId: string) => allSessionIds.push(sessionId) }
 				: {}),
@@ -455,6 +457,9 @@ async function main(): Promise<void> {
 		process.exit(1);
 	}
 
+	if (skippedRecordCount > 0) {
+		console.error(`agent-ledger: skipped ${skippedRecordCount} invalid log record(s); cost totals may be incomplete`);
+	}
 	if (unknownModels.size > 0) {
 		console.error(
 			'agent-ledger: no verified price for model(s): ' +
