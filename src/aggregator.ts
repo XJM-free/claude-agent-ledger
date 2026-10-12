@@ -256,8 +256,9 @@ export async function aggregate(
 
 // MOAT feature: subagent-graph cost attribution.
 // Walks every parent session and recursively sums children to produce a tree
-// rooted at the orchestrator. Helicone/Langfuse cannot do this — they observe
-// API calls, not Claude Code's orchestration tree.
+// rooted at the observed orchestrator, or at the first in-period child when
+// the parent is outside the selected range. Helicone/Langfuse cannot do this —
+// they observe API calls, not Claude Code's orchestration tree.
 interface SessionAccum {
 	sessionId: string;
 	label: string;
@@ -298,7 +299,8 @@ export class SubagentGraph {
 		}
 	}
 
-	// Build the trees. Each root has parentSessionId === undefined.
+	// Build the trees. A session is also a display root when its parent falls
+	// outside the selected period and therefore is not present in this graph.
 	// Returns roots sorted by total cost (descending), top N only by default.
 	finalize(topN = 20): SubagentTreeNode[] {
 		const childrenOf = new Map<string, string[]>();
@@ -328,7 +330,7 @@ export class SubagentGraph {
 			};
 		};
 		const roots = [...this.accums.values()]
-			.filter((a) => !a.parentSessionId)
+			.filter((a) => !a.parentSessionId || !this.accums.has(a.parentSessionId))
 			.map((a) => buildNode(a.sessionId))
 			.sort(compareTreeNodes)
 			.slice(0, topN);

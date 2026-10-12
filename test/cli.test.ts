@@ -59,6 +59,34 @@ function withExplainFixture<T>(run: (home: string, sessionPath: string) => T): T
 	}
 }
 
+function withRootSessions<T>(rootCount: number, run: (home: string) => T): T {
+	const home = mkdtempSync(join(tmpdir(), 'agent-ledger-tree-'));
+	const projectDir = join(home, '.claude', 'projects', '-synthetic');
+	mkdirSync(projectDir, { recursive: true });
+	const timestamp = new Date(Date.now() - 1_000).toISOString();
+	for (let i = 0; i < rootCount; i++) {
+		writeFileSync(
+			join(projectDir, `root-${String(i).padStart(2, '0')}.jsonl`),
+			JSON.stringify({
+				type: 'assistant',
+				timestamp,
+				subagentType: `root-${String(i).padStart(2, '0')}`,
+				message: {
+					model: 'claude-sonnet-4-6',
+					usage: { input_tokens: 1_000_000, output_tokens: 0 },
+					content: [],
+				},
+			}) + '\n',
+			'utf8',
+		);
+	}
+	try {
+		return run(home);
+	} finally {
+		rmSync(home, { recursive: true, force: true });
+	}
+}
+
 describe('CLI metadata flags', () => {
 	for (const args of [['--help'], ['-h'], ['help'], ['week', '--help']]) {
 		test(`${args.join(' ')} prints help and exits successfully`, () => {
@@ -467,4 +495,26 @@ describe('explain privacy flags', () => {
 			expect(result.stderr).not.toContain('extra-private-session');
 		});
 	}
+});
+
+describe('tree accounting', () => {
+	test('budget and grand total include roots omitted from the top-20 display', () => {
+		withRootSessions(21, (home) => {
+			const env = { HOME: home, USERPROFILE: home };
+			const result = runCli(['week', '--tree', '--json', '--budget', '61'], env);
+			const report = JSON.parse(result.stdout) as {
+				roots: unknown[];
+				totalCost: number;
+			};
+
+			expect(result.exitCode).toBe(2);
+			expect(report.roots).toHaveLength(20);
+			expect(report.totalCost).toBeCloseTo(63, 6);
+			expect(result.stderr).toContain('total $63.00 > budget $61.00');
+
+			const equalBudget = runCli(['week', '--tree', '--json', '--budget', '63'], env);
+			expect(equalBudget.exitCode).toBe(0);
+			expect(JSON.parse(equalBudget.stdout).totalCost).toBeCloseTo(63, 6);
+		});
+	});
 });

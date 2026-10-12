@@ -32,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shortest directly resolvable display label, including collisions from logs
   outside the requested date range. Reported duplicate full IDs or labels
   outside the supported CLI form fail closed without printing IDs or paths.
+- Keep `--tree` grand totals and `--budget` checks complete when more than 20
+  roots exist, and display in-range children whose parent is outside the period.
 
 ## [0.7.2] — 2026-07-23
 
