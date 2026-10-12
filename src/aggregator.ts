@@ -9,7 +9,7 @@ const UNKNOWN_TOOL_LABEL = '(no-tool)';
 export type GroupKey = 'subagent' | 'model' | 'day' | 'project' | 'session' | 'tool';
 
 // Decode Claude Code's project directory name to something readable.
-//   "-Users-xiangjie-clawbot" → "~/clawbot"
+//   "-Users-example-project" → "~/project"
 export function decodeProjectId(encoded: string): string {
 	if (!encoded.startsWith('-')) return encoded;
 	const parts = encoded.slice(1).split('-');
